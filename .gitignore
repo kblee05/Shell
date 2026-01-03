@@ -3,3 +3,6 @@ libmymalloc.a
 main.c
 
 MemoryAllocator.h
+
+*.o
+main
