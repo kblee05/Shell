@@ -1,17 +1,19 @@
 #include "my_shell.h"
-#include "MemoryAllocator.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <stdlib.h>
+#include <ctype.h>
 
 #define SHELL_RL_BUFSIZE 1024
 
 char *myshell_readline(){
     int bufsize = SHELL_RL_BUFSIZE;
     int position = 0;
-    char *buffer = my_malloc(sizeof(char) * bufsize);
+    char *buffer = malloc(sizeof(char) * bufsize);
+    
     if(!buffer){
         perror("Shell: rl buffer allocation failed\n");
         return NULL;
@@ -25,11 +27,11 @@ char *myshell_readline(){
             return buffer;
         }
 
-        buffer[position++] = c;
+        buffer[position++] = (char) c;
 
         if(position >= bufsize){
             bufsize += SHELL_RL_BUFSIZE;
-            buffer = my_realloc(buffer, bufsize);
+            buffer = realloc(buffer, bufsize);
             if(!buffer){
                 perror("Shell: rl buffer reallocationf failed\n");
                 return NULL;
@@ -39,95 +41,134 @@ char *myshell_readline(){
 }
 
 #define SHELL_TOK_BUFSIZE 64
-#define SHELL_TOK_LENGTH SHELL_RL_BUFSIZE
+#define SHELL_TOK_LENGTH 1024
 #define SHELL_TOK_DELIM " \t\r\n\a"
 
-char **myshell_parseline(char* line){
-    size_t bufsize = SHELL_TOK_BUFSIZE;
-    char **tokens = my_malloc(bufsize * sizeof(char *));
+static size_t tok_bufsize = 0;
+
+static void add_token(char* token, size_t *t_idx, char **tokens, size_t *pos){
+    token[*t_idx] = '\0';
+    *t_idx = 0;
+    tokens[(*pos)++] = strdup(token);
+    tokens[*pos] = NULL;
+}
+
+static char **myshell_parseline(char* line){
+    tok_bufsize = SHELL_TOK_BUFSIZE;
+    char **tokens = malloc(tok_bufsize * sizeof(char *));
     if(!tokens){
         perror("Shell: token allocation failed\n");
-        return NULL;
+        exit(1);
     }
 
-    char *temp_buf = my_malloc(SHELL_TOK_LENGTH);
-    if(!temp_buf){
+    char *token = malloc(SHELL_TOK_LENGTH);
+    if(!token){
         perror("Shell: temp token buf allocation failed\n");
-        return NULL;
+        exit(1);
     }
 
     size_t t_idx = 0;
-    int in_quotes = 0;
     size_t pos = 0;
+    int is_empty = 0;
     
     for(int i = 0; line[i] != '\0'; i++){
+        if(pos >= tok_bufsize - 1){
+            tok_bufsize += SHELL_TOK_BUFSIZE;
+            tokens = realloc(tokens, tok_bufsize);
+        }
+
         char c = line[i];
 
-        if(c == '\\'){
-            temp_buf[t_idx++] = line[++i];
+        if(isspace(c)){
+            if(t_idx || is_empty) add_token(token, &t_idx, tokens, &pos);
+            is_empty = 0;
             continue;
+        }
+
+        if(c == '\\'){
+            i++;
+            char next = line[i];
+            if(next == '\n'){
+                continue;
+            }
+            else if(next != '\0'){
+                token[t_idx++] = next;
+            }
         }
         else if(c == '\''){
+            is_empty = 1;
             i++;
-            while(line[i] != '\'' && line[i] != '\0'){
-                temp_buf[t_idx++] = line[i++];
+            while(line[i] != '\0' && line[i] != '\''){
+                token[t_idx++] = line[i++];
             }
-            continue;
-        }
 
-        if(c == '"'){
-            in_quotes = !in_quotes;
-            continue;
+            if(line[i] == '\0'){
+                perror("Shell: single quote not finished\n");
+                exit(1);
+            }
         }
+        else if(c == '\"'){
+            is_empty = 1;
+            i++;
+            while(line[i] != '\0' && line[i] != '\"'){
+                if(line[i] == '\\'){
+                    char next = line[i + 1];
+                    if(next == '$' || next == '`' || next == '\"' || next == '\\' || next == '\n'){
+                        i++;
+                    }
+                }
+                token[t_idx++] = line[i++]; 
+            }
 
-        if(!in_quotes && isspace(c)){
-            if(t_idx > 0){
-                temp_buf[t_idx] = '\0';
-                tokens[pos++] = my_strdup(temp_buf);
-                t_idx = 0;
+            if(line[i] == '\0'){
+                perror("Shell: double quote not finished\n");
+                exit(1);
+            }
+        }
+        else if(c == '$'){
+            i++;
+            char var_name[64];
+            int v_idx = 0;
+
+            while(isalnum(line[i]) || line[i] == '_'){
+                var_name[v_idx++] = line[i++];
+            }
+            var_name[v_idx] = '\0';
+            i--;
+
+            char *val = getenv(var_name);
+            if(val){
+                while(*val){
+                    token[t_idx++] = *val++;
+                }
             }
         }
         else{
-            temp_buf[t_idx++] = c;
+            token[t_idx++] = c;
         }
     }
 
-    /*
-    char *token = strtok(line, SHELL_TOK_DELIM);
-
-    while(token){
-        tokens[position++] = token;
-
-        if(position >= bufsize){
-            bufsize += SHELL_TOK_BUFSIZE;
-            tokens = my_realloc(tokens, bufsize * sizeof(char *));
-            if(!tokens){
-                perror("Shell: token reallocation failed\n");
-                return NULL;
-            }
-        }
-
-        token = strtok(NULL, SHELL_TOK_DELIM);
+    if(t_idx || is_empty){
+        add_token(token, &t_idx, tokens, &pos);
     }
     
-
-    tokens[position] = NULL;
+    free(token);
     return tokens;
-    */
 }
 
-static int myshell_launch(char **args){
+static void myshell_launch(char **args){
     pid_t pid = fork();
+
     if(pid < 0){
         perror("Shell: fork failed\n");
-        return -1;
+        exit(1);
     }
-
-    if(pid == 0){ // Child process
+    else if(pid == 0){ // Child process
         if(execvp(args[0], args) == -1){
             perror("Shell: fork child failed\n");
-            return -1;
+            exit(1);
         }
+        exit(0);
     }
     else{ // Parent process
         pid_t wpid;
@@ -136,24 +177,33 @@ static int myshell_launch(char **args){
             wpid = waitpid(pid, &status, WUNTRACED);
         }while(!WIFEXITED(status) && !WIFSIGNALED(status));
     }
-
-    return 1;
 }
 
-int myshell_execute(char **args){
-
+static int myshell_execute(char **args){
+    if(!strcmp(args[0], "cd")){
+        chdir(args[1]);
+        char **cd_arg = malloc(sizeof(char *) * 2);
+        cd_arg[0] = "pwd\0";
+        cd_arg[1] = NULL;
+        myshell_launch(cd_arg);
+        free(cd_arg);
+    }
+    else{
+        myshell_launch(args);
+    }
+    return 1;
 }
 
 void myshell_loop(){
     int status;
-
     do{
         printf("< ");
-        char* line = myshell_readline();
-        char ** args = myshell_parseline(line);
+        char *line;
+        while(!((line) = myshell_readline())){}
+        char **args = myshell_parseline(line);
         status = myshell_execute(args);
         
-        my_free(line);
-        my_free(args);
+        free(line);
+        free(args);
     }while(status);
 }

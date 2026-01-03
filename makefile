@@ -1,14 +1,18 @@
 CC = gcc
 CFLAGS = -Wall -g
-LDFLAGS = -L. -lmymalloc
 
-all: my_shell
+TARGET = main
 
-my_shell: my_shell.o
-	$(CC) -o $@ $^ $(LDFLAGS)
+all: $(TARGET)
 
-my_shell.o: mys_hell.c MemoryAllocator.h
-	$(CC) $(CFLAGS) -c myshell.c
+$(TARGET): main.o my_shell.o
+	$(CC) -o $(TARGET) main.o my_shell.o
+
+main.o: main.c my_shell.h
+	$(CC) $(CFLAGS) -c main.c
+
+my_shell.o: my_shell.c my_shell.h
+	$(CC) $(CFLAGS) -c my_shell.c
 
 clean:
-	rm -f my_shell *.o
+	rm -f $(TARGET) *.o
