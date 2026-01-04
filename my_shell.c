@@ -82,7 +82,7 @@ void myshell_loop(){
         char *line;
         while(!((line) = readline())){}
         char **args = parseline(line);
-        debug_args(args);
+        //debug_args(args);
         status = exec_cmdlist(args);
         
         free(line);
@@ -131,7 +131,7 @@ static int exec_cmdlist(char **args){
     
     // end has to be either null or an op
     // return 0 if finished successfully
-    return args[pos] && !is_cmdlistop(args[pos-1]);
+    return status;
 }
 
 
@@ -147,6 +147,11 @@ static int exec_subshell(char **args);
 static int exec_cmd(char **args){
     if(!args[0])
         return 0;
+
+    if(strcmp(args[0], "!") == 0){ // negation
+        int status = exec_cmd(&args[1]);
+        return (status == 0) ? 1 : 0;
+    }
 
     if(!strcmp(args[0], "(")){ // subshell
         return exec_subshell(args);
@@ -165,9 +170,6 @@ static char **rm_parens(char **args);
 
 static int exec_subshell(char **args){
     char **new_args = rm_parens(args);
-
-    printf("subshell new args: ");
-    debug_args(new_args);
 
     pid_t pid = fork();
     if(pid < 0){
@@ -232,12 +234,10 @@ static char **rm_parens(char **args){
 static int exec_builtin(char **args){
     if(!strcmp(args[0], "cd")){
         int res = chdir(args[1]);
-        char **cd_arg = malloc(sizeof(char *) * 2);
-        cd_arg[0] = "pwd";
-        cd_arg[1] = NULL;
-        exec_external(cd_arg);
-        free(cd_arg);
-        return res;
+        if(res == -1){
+            return 1;
+        }
+        return 0;
     }
     else if(!strcmp(args[0], "quit")){
         exit(0);

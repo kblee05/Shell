@@ -6,3 +6,5 @@ MemoryAllocator.h
 
 *.o
 main
+
+.vscode/

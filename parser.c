@@ -109,7 +109,7 @@ char **parseline(char* line){
             continue;
         }
 
-        if(c == '(' || c == ')'){
+        if(c == '(' || c == ')' || c == '!'){
             if(t_idx || is_empty) add_token(token, &t_idx, tokens, &pos);
             token[t_idx++] = c;
             add_token(token, &t_idx, tokens, &pos);
