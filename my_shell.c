@@ -1,5 +1,7 @@
 #include "my_shell.h"
 #include "parser.h"
+#include "dynamicstring.h"
+#include "tokenizer.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -12,6 +14,9 @@
 
 //  =====================Helper functions====================
 
+#define SHELL_CMD_CNT 16
+#define SHELL_TOK_BUFSIZE 64
+
 /*
  *  check whether cmd is builtin or not
  */
@@ -20,39 +25,6 @@ static int is_builtin(char *arg){
     if(!strcmp(arg, "cd")) return 1;
     if(!strcmp(arg, "quit")) return 1;
     return 0;
-}
-
-/*
- *  Check if argument is a cmdlist operator
- */
-
-static int is_cmdlistop(const char* arg){
-    if(!arg) return 0;
-    if(!strcmp(arg, ";")) return 1;
-    if(!strcmp(arg, "&&")) return 1;
-    if(!strcmp(arg, "||")) return 1;
-    return 0;
-}
-
-/*
- *  Check whether command results and cmdlist operator relation is valid
- *  op: ;, &&, ||
- */
-
-static int prev_status(const char* op, const int status){
-    if(!is_cmdlistop(op))
-        return 0;
-    
-    if(!strcmp(op, ";")){
-        return 1;
-    }
-    if(!strcmp(op, "&&")){
-        return !status;
-    }
-    if(!strcmp(op, "||")){
-        return status;
-    }
-    return 1;
 }
 
 /*
@@ -75,7 +47,7 @@ static void debug_args(char **args){
  *  Start of the shell
  */
 
-static int exec_cmdlist(char **args);
+static int exec_sep(char **args);
 
 void myshell_loop(){
     int status;
@@ -84,147 +56,105 @@ void myshell_loop(){
         char *line;
         while(!((line) = readline())){}
         char **args = parseline(line);
-        debug_args(args);
-        status = exec_cmdlist(args);
+        //debug_args(args);
+        status = exec_sep(args);
         
         free(line);
         size_t i = 0;
         while(args[i])
             free(args[i++]);
         free(args);
-    }while(!status);
+    }while(1);
 }
 
 
-
 /*
- *  Execute the arguments
- *  op = ; OR && or ||
- *  cmdlist = cmd { op cmdlist }
- *  
- *  Function hiearchy goes like LOOP -> EXEC_CMDLIST -> 
+ *  execute separators ; &
  */
 
-#define SHELL_TOK_BUFSIZE 64
+static int exec_logic(char ** args);
 
+static int
+exec_sep(char **args)
+{
+    SepNode *curr = parse_sep(args);
+    SepNode *head = curr;
+
+    while(curr != NULL){
+        if(exec_logic(curr->args) == 1){
+            free_sep_list(head);
+            return 1;
+        }
+
+        curr = curr->next;
+    }
+
+    free_sep_list(head);
+    return 0;
+}
+
+/*
+ *  execute logic operators && ||
+ */
+
+static int exec_pipe(char **args);
+
+static int
+exec_logic(char **args)
+{
+    LogicNode *curr = parse_logic(args);
+    LogicNode *head = curr;
+    int last_status = 0;
+    int skip = 0;
+
+    while(curr){
+        if(!skip){
+            last_status = exec_pipe(curr->args);
+        }
+
+        if(curr->type == LOGIC_AND){
+            skip = (last_status != 0);
+        }
+        else if(curr->type == LOGIC_OR){
+            skip = (last_status == 0);
+        }
+        else{
+            skip = 0;
+        }
+
+        curr = curr->next;
+    }
+
+    free_logic_list(head);
+    return last_status;
+}
+
+/*
+ *  execute pipeline |
+ */
+
+//static int exec_redirec(char **args);
 static int exec_cmd(char **args);
 
-static int exec_cmdlist(char **args){
-    size_t pos = 0;
-    int status;
-    do{
-        char **new_args = malloc(sizeof(char *) * SHELL_TOK_BUFSIZE);
-        size_t idx = 0;
-        int depth = 0;
+static int
+exec_pipe(char **args)
+{
+    PipeNode *curr = parse_pipe(args);
+    PipeNode *head = curr;
 
-        while(args[pos]){
-            if(strcmp(args[pos], "(") == 0) depth++;
-            else if(strcmp(args[pos], ")") == 0) depth--;
-
-            if(depth == 0 && is_cmdlistop(args[pos])) break;
-
-            new_args[idx++] = args[pos++];
-        }
-        new_args[idx] = NULL;
-
-        status = exec_cmd(new_args);
-        free(new_args);
-    }while(args[pos] != NULL && prev_status(args[pos++], status));
-    
-    // end has to be either null or an op
-    // return 0 if finished successfully
-    return status;
-}
-
-
-
-/*
- *  Check whether command is for subshell, builtin, or external
- */
-
-static int exec_builtin(char **args);
-static int exec_external(char **args);
-static int exec_subshell(char **args);
-static int exec_pipeline(char **args);
-
-static int exec_cmd(char **args){
-    if(!args[0])
-        return 0;
-
-    if(strcmp(args[0], "!") == 0){ // negation
-        int status = exec_cmd(&args[1]);
-        return (status == 0) ? 1 : 0;
+    if(curr->next == NULL){
+        return exec_cmd(args);
     }
 
-    for(size_t i = 0; args[i] != NULL; i++){
-        if(strcmp(args[i], "|") == 0){
-            return exec_pipeline(args);
-        }
-    }
-
-    if(!strcmp(args[0], "(")){ // subshell
-        return exec_subshell(args);
-    }
-    else if(is_builtin(args[0])){
-        return exec_builtin(args);
-    }
-    return exec_external(args);
-}
-
-
-/*
- *  execute pipelines
- */
-
-#define SHELL_CMD_CNT 16
-
-static int exec_pipeline(char **args){
-    size_t cmdcnt = SHELL_CMD_CNT;
-    char ***cmd = malloc(sizeof(char **) * cmdcnt);
-    size_t bufsize = SHELL_TOK_BUFSIZE;
-    size_t idx = 0;
-    size_t t_idx = 0; // token idx
-    cmd[0] = malloc(sizeof(char *) * bufsize);
-    for(size_t i = 0; args[i] != NULL; i++){
-        if(idx >= cmdcnt - 1){
-            cmdcnt += SHELL_CMD_CNT;
-            cmd = realloc(cmd, sizeof(char **) * cmdcnt);
-            if(cmd == NULL){
-                perror("Shell: pipeline cmd list realloc failed\n");
-                return 1;
-            }
-        }
-        
-        if(strcmp(args[i], "|") == 0){
-            cmd[idx++][t_idx] = NULL;
-            t_idx = 0;
-            cmd[idx] = malloc(sizeof(char*) * SHELL_TOK_BUFSIZE);
-            bufsize = SHELL_TOK_BUFSIZE;
-            continue;
-        }
-
-        if(t_idx >= bufsize - 1){
-            bufsize += SHELL_TOK_BUFSIZE;
-            char **temp = realloc(cmd[idx], bufsize * sizeof(char *));
-            if(temp == NULL){
-                perror("Shell: pipeline cmd list buf realloc failed\n");
-                return 1;
-            }
-            cmd[idx] = temp;
-        }
-
-        cmd[idx][t_idx++] = strdup(args[i]);
-    }
-    cmd[idx][t_idx] = NULL;
-    cmd[idx + 1] = NULL;
-
-    int num_cmds = idx + 1;
     int pipefd[2];
-    int prev_pipefd = 0;
-    pid_t pids[num_cmds];
+    int prev_pipefd = -1;
+    pid_t last_pid;
+    int child_count = 0;
 
-    for(int i=0; i<num_cmds; i++){
-        if(i < num_cmds - 1){
+    while(curr != NULL){
+        child_count++;
+
+        if(curr->next != NULL){
             if(pipe(pipefd) == -1){
                 perror("Shell: pipe failed\n");
                 return 1;
@@ -232,52 +162,49 @@ static int exec_pipeline(char **args){
         }
 
         pid_t pid = fork();
-        pids[i] = pid;
+        last_pid = pid;
         if(pid < 0){
             perror("Shell: pipeline fork failed\n");
             return 1;
         }
         else if(pid == 0){
-            if(prev_pipefd != 0){
+            if(prev_pipefd != -1){
                 dup2(prev_pipefd, STDIN_FILENO);
                 close(prev_pipefd);
             }
 
-            if(i < num_cmds - 1){
-                close(pipefd[0]);
+            if(curr->next != NULL){
+                close(pipefd[0]); // close pipe read
                 dup2(pipefd[1], STDOUT_FILENO);
                 close(pipefd[1]);
             }
 
-            if(execvp(cmd[i][0], cmd[i]) == -1){
-                perror("Shell: pipeline execvp failed\n");
-                exit(1);
-            }
+            int status = exec_cmd(curr->args);
+            exit(status);
         }
         else{ // parent
-            if(prev_pipefd != 0)
-                close(prev_pipefd);
+            if(prev_pipefd != -1)
+                close(prev_pipefd); // need to close prev_pipefd afterwards because it became a FD (pipefd[0])
             
-            if(i < num_cmds - 1){
+            if(curr->next != NULL){
                 close(pipefd[1]);
-                prev_pipefd = pipefd[0];
+                prev_pipefd = pipefd[0]; // prev_pipefd becomes a FD here (pipefd[0])
             }
-        }
-    }
 
-    for(int i=0; i< num_cmds; i++){
-        for(int j = 0; cmd[i][j] != NULL; j++){
-            free(cmd[i][j]);
+            // pipes are reset after this iteration
+            // need to save pipefd[0] for chain
+            // DO NOT CLOSE prev_pipefd for the next process input
         }
-        free(cmd[i]);
+
+        curr = curr->next;
     }
-    free(cmd);
+    free_pipe_list(head);
 
     int status;
     int last_status;
-    for(int i=0; i<num_cmds; i++){
+    for(int i=0; i<child_count; i++){
         pid_t wpid = wait(&status);
-        if(wpid == pids[num_cmds - 1]){
+        if(wpid == last_pid){
             if(WIFEXITED(status)){
                 last_status = WEXITSTATUS(status);
             }
@@ -290,14 +217,41 @@ static int exec_pipeline(char **args){
     return last_status;
 }
 
+
+/*
+ *  Check whether command is for subshell, builtin, or external
+ */
+
+static int exec_builtin(char **args);
+static int exec_external(char **args);
+static int exec_subshell(char **args);
+
+static int exec_cmd(char **args){
+    if(!args[0])
+        return 0;
+
+    if(strcmp(args[0], "!") == 0){ // negation
+        int status = exec_cmd(&args[1]);
+        return (status == 0) ? 1 : 0;
+    }
+
+    if(!strcmp(args[0], "(")){ // subshell
+        return exec_subshell(args);
+    }
+    else if(is_builtin(args[0])){
+        return exec_builtin(args);
+    }
+    return exec_external(args);
+}
+
 /*
  *  execute    ( foo )   in a subshell
  */
 
-static char **rm_parens(char **args);
+static dystring *rm_parens(char **args);
 
 static int exec_subshell(char **args){
-    char **new_args = rm_parens(args);
+    dystring *ds = rm_parens(args);
 
     pid_t pid = fork();
     if(pid < 0){
@@ -305,16 +259,17 @@ static int exec_subshell(char **args){
         exit(1);
     }
     else if(pid == 0){ // subshell
-        int status = exec_cmdlist(new_args);
+        int status = exec_sep(ds->strings);
         exit(status);
     }
     else{ // parent
         int status;
         pid_t wpid = waitpid(pid, &status, WUNTRACED);
-        size_t i = 0;
-        while(new_args[i])
-            free(new_args[i++]);
-        free(new_args);
+        
+        free_dystring(ds);
+        free(ds);
+        ds = NULL;
+
         if(wpid)
             return WEXITSTATUS(status);
         return 1;
@@ -325,32 +280,30 @@ static int exec_subshell(char **args){
  *  remove parenthesis tokens for subshell operations
  */
 
-static char **rm_parens(char **args){
-    if(strcmp(args[0], "(")){
+static dystring *rm_parens(char **args){
+    //debug_args(args);
+    if(strcmp(args[0], "(") != 0){
         perror("Shell: subshell does not start with paranthesis\n");
         exit(1);
     }
 
-    size_t bufsize = SHELL_TOK_BUFSIZE;
-    char **new_args = malloc(sizeof(char *) * bufsize);
-    size_t i = 1; // skip opening paranthesis
+    dystring *ds = (dystring *)malloc(sizeof(dystring));
+    init_dystring(ds);
+    int i = 1;
+    int depth = 0;
 
-    while(args[i] && strcmp(args[i], ")")){
-        if(i >= bufsize - 1){
-            bufsize += SHELL_TOK_BUFSIZE;
-            new_args = realloc(new_args, bufsize * sizeof(char *));
-        }
-
-        new_args[i-1] = strdup(args[i]);
-        i++;
+    while(args[i]  && (depth >0 || strcmp(args[i], ")"))){
+        if(strcmp(args[i], "(") == 0) depth++;
+        else if(strcmp(args[i], ")") == 0) depth--;
+        append_dystring(ds, args[i++]);
     }
-    if(strcmp(args[i], ")")){
+
+    if(strcmp(args[i], ")") != 0){
         perror("Shell: subshell did not end with paranthesis\n");
         exit(1);
     }
 
-    new_args[i-1] = NULL;
-    return new_args;
+    return ds;
 }
 
 
@@ -377,7 +330,9 @@ static int exec_builtin(char **args){
  *  Execute commands that require fork - exec
  */
 
-static int exec_external(char **args){
+static int
+exec_external(char **args)
+{
     pid_t pid = fork();
 
     if(pid < 0){

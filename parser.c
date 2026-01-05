@@ -1,193 +1,271 @@
 #include "parser.h"
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <sys/wait.h>
 #include <stdlib.h>
-#include <ctype.h>
+#include <string.h>
 
 /*
- *  Token helper function
+ * ==============================================================
+ *
+ *                Parse separators ;, &
+ * 
+ * ==============================================================
  */
 
-static void add_token(char* token, size_t *t_idx, char **tokens, size_t *pos){
-    token[*t_idx] = '\0';
-    *t_idx = 0;
-    tokens[(*pos)++] = strdup(token);
-    tokens[*pos] = NULL;
+
+static void
+append_sepnode(SepNode **head, char **args, SepType type)
+{
+    SepNode *new_node = (SepNode *)malloc(sizeof(SepNode));
+    if(new_node == NULL) return;
+
+    new_node->args = args;
+    new_node->type = type;
+    new_node->next = NULL;
+
+    if(*head == NULL){
+        *head = new_node;
+        return;
+    }
+
+    SepNode *curr = *head;
+    while(curr->next != NULL){
+        curr = curr->next;
+    }
+
+    curr->next = new_node;
 }
 
-/*  
- *  ======================
- *  Part for reading input
- *  ======================
- */ 
+SepNode
+*parse_sep(char **args)
+{
+    SepNode *head = NULL;
+    dystring ds;
+    init_dystring(&ds);
+    char **sep_args;
+    int depth = 0;
 
-#define SHELL_RL_BUFSIZE 1024
+    for(int i=0; args[i] != NULL; i++){
+        if(strcmp(args[i], "(") == 0) depth++;
+        else if(strcmp(args[i], ")") == 0) depth--;
 
-/*
- *  Buffer for termianl commands
- */
-
-char *readline(){
-    int bufsize = SHELL_RL_BUFSIZE;
-    int position = 0;
-    char *buffer = malloc(sizeof(char) * bufsize);
-    
-    if(!buffer){
-        perror("Shell: rl buffer allocation failed\n");
-        return NULL;
-    }
-
-    while(1){
-        int c = getchar();
-
-        if(c == EOF || c == '\n'){
-            buffer[position] = '\0';
-            return buffer;
-        }
-
-        buffer[position++] = (char) c;
-
-        if(position >= bufsize){
-            bufsize += SHELL_RL_BUFSIZE;
-            buffer = realloc(buffer, bufsize);
-            if(!buffer){
-                perror("Shell: rl buffer reallocationf failed\n");
-                return NULL;
-            }
-        }
-    }
-}
-
-/*  
- *  ================
- *  Part for parsing
- *  ================
- * 
- *  http://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_03
- * 
- */ 
-
- 
-
-#define SHELL_TOK_BUFSIZE 64
-#define SHELL_TOK_LENGTH 1024
-#define SHELL_TOK_DELIM " \t\r\n\a"
-
-static size_t tok_bufsize = 0;
-
-/*
- *  Parser
- */
-
-char **parseline(char* line){
-    tok_bufsize = SHELL_TOK_BUFSIZE;
-    char **tokens = malloc(tok_bufsize * sizeof(char *));
-    if(!tokens){
-        perror("Shell: token allocation failed\n");
-        exit(1);
-    }
-
-    char *token = malloc(SHELL_TOK_LENGTH);
-    if(!token){
-        perror("Shell: temp token buf allocation failed\n");
-        exit(1);
-    }
-
-    size_t t_idx = 0;
-    size_t pos = 0;
-    int is_empty = 0;
-    
-    for(int i = 0; line[i] != '\0'; i++){
-        if(pos >= tok_bufsize - 1){
-            tok_bufsize += SHELL_TOK_BUFSIZE;
-            tokens = realloc(tokens, tok_bufsize * sizeof(char *));
-        }
-
-        char c = line[i];
-
-        if(isspace(c)){
-            if(t_idx || is_empty) add_token(token, &t_idx, tokens, &pos);
-            is_empty = 0;
+        if(depth > 0){
+            append_dystring(&ds, args[i]);
             continue;
         }
 
-        if(c == '(' || c == ')' || c == '!'){
-            if(t_idx || is_empty) add_token(token, &t_idx, tokens, &pos);
-            token[t_idx++] = c;
-            add_token(token, &t_idx, tokens, &pos);
-            is_empty = 0;
+        if(strcmp(args[i], ";") == 0 || strcmp(args[i], "&") == 0){
+            sep_args = ds.strings; // move ownership
+            ds.strings = NULL; // reset dangling pointer
+            init_dystring(&ds);
+
+            SepType type = strcmp(args[i], ";") == 0 ? SEP_SYNC : SEP_ASYNC;
+            append_sepnode(&head, sep_args, type);
             continue;
         }
-        else if(c == '\\'){
-            i++;
-            char next = line[i];
-            if(next == '\n'){
-                continue;
-            }
-            else if(next != '\0'){
-                token[t_idx++] = next;
-            }
-        }
-        else if(c == '\''){
-            is_empty = 1;
-            i++;
-            while(line[i] != '\0' && line[i] != '\''){
-                token[t_idx++] = line[i++];
-            }
-
-            if(line[i] == '\0'){
-                perror("Shell: single quote not finished\n");
-                exit(1);
-            }
-        }
-        else if(c == '\"'){
-            is_empty = 1;
-            i++;
-            while(line[i] != '\0' && line[i] != '\"'){
-                if(line[i] == '\\'){
-                    char next = line[i + 1];
-                    if(next == '$' || next == '`' || next == '\"' || next == '\\' || next == '\n'){
-                        i++;
-                    }
-                }
-                token[t_idx++] = line[i++]; 
-            }
-
-            if(line[i] == '\0'){
-                perror("Shell: double quote not finished\n");
-                exit(1);
-            }
-        }
-        else if(c == '$'){
-            i++;
-            char var_name[64];
-            int v_idx = 0;
-
-            while(isalnum(line[i]) || line[i] == '_'){
-                var_name[v_idx++] = line[i++];
-            }
-            var_name[v_idx] = '\0';
-            i--;
-
-            char *val = getenv(var_name);
-            if(val){
-                while(*val){
-                    token[t_idx++] = *val++;
-                }
-            }
-        }
-        else{
-            token[t_idx++] = c;
-        }
+        append_dystring(&ds, args[i]);
+    }
+    if(ds.curr_size > 0){
+        append_sepnode(&head, ds.strings, SEP_NONE);
+    }
+    else{
+        free(ds.strings);
+        ds.strings = NULL;
     }
 
-    if(t_idx || is_empty){
-        add_token(token, &t_idx, tokens, &pos);
+    return head;
+}
+
+void
+free_sep_list(SepNode *head)
+{
+    SepNode *curr = head;
+    while(curr != NULL){
+        SepNode *next = curr->next;
+        
+        if(curr->args != NULL){
+            for(int i=0; curr->args[i] != NULL; i++){
+                free(curr->args[i]);
+            }
+            free(curr->args);
+        }
+
+        free(curr);
+        curr = next;
     }
-    
-    free(token);
-    return tokens;
+}
+
+/*
+ * ==============================================================
+ *
+ *                Parse Logic operators &&, ||
+ * 
+ * ==============================================================
+ */
+
+static void
+append_logicnode(LogicNode **head, char **args, LogicType type)
+{
+    LogicNode *new_node = (LogicNode *)malloc(sizeof(LogicNode));
+    if(new_node == NULL) return;
+
+    new_node->args = args;
+    new_node->type = type;
+    new_node->next = NULL;
+
+    if(*head == NULL){
+        *head = new_node;
+        return;
+    }
+
+    LogicNode *curr = *head;
+    while(curr->next != NULL){
+        curr = curr->next;
+    }
+
+    curr->next = new_node;
+}
+
+LogicNode
+*parse_logic(char **args)
+{
+    LogicNode *head = NULL;
+    dystring ds;
+    init_dystring(&ds);
+    char **sep_args;
+    int depth = 0;
+
+    for(int i=0; args[i] != NULL; i++){
+        if(strcmp(args[i], "(") == 0) depth++;
+        else if(strcmp(args[i], ")") == 0) depth--;
+
+        if(depth > 0){
+            append_dystring(&ds, args[i]);
+            continue;
+        }
+
+        if(strcmp(args[i], "&&") == 0 || strcmp(args[i], "||") == 0){
+            sep_args = ds.strings; // move ownership
+            ds.strings = NULL; // reset dangling pointer
+            init_dystring(&ds);
+
+            LogicType type = strcmp(args[i], "&&") == 0 ? LOGIC_AND : LOGIC_OR;
+            append_logicnode(&head, sep_args, type);
+            continue;
+        }
+        append_dystring(&ds, args[i]);
+    }
+    if(ds.curr_size > 0){
+        append_logicnode(&head, ds.strings, LOGIC_NONE);
+    }
+    else{
+        free(ds.strings);
+        ds.strings = NULL;
+    }
+
+    return head;
+}
+
+void
+free_logic_list(LogicNode *head){
+    LogicNode *curr = head;
+    while(curr != NULL){
+        LogicNode *next = curr->next;
+        
+        if(curr->args != NULL){
+            for(int i=0; curr->args[i] != NULL; i++){
+                free(curr->args[i]);
+            }
+            free(curr->args);
+        }
+
+        free(curr);
+        curr = next;
+    }
+}
+
+/*
+ * ==============================================================
+ *
+ *                        Parse piplines |
+ * 
+ * ==============================================================
+ */
+
+static void
+append_pipenode(PipeNode **head, char **args)
+{
+    PipeNode *new_node = (PipeNode *)malloc(sizeof(PipeNode));
+    if(new_node == NULL) return;
+
+    new_node->args = args;
+    new_node->next = NULL;
+
+    if(*head == NULL){
+        *head = new_node;
+        return;
+    }
+
+    PipeNode *curr = *head;
+    while(curr->next != NULL){
+        curr = curr->next;
+    }
+
+    curr->next = new_node;
+}
+
+PipeNode
+*parse_pipe(char **args)
+{
+    PipeNode *head = NULL;
+    dystring ds;
+    init_dystring(&ds);
+    char **sep_args;
+    int depth = 0;
+
+    for(int i=0; args[i] != NULL; i++){
+        if(strcmp(args[i], "(") == 0) depth++;
+        else if(strcmp(args[i], ")") == 0) depth--;
+
+        if(depth > 0){
+            append_dystring(&ds, args[i]);
+            continue;
+        }
+        
+        if(strcmp(args[i], "|") == 0){
+            sep_args = ds.strings; // move ownership
+            ds.strings = NULL; // reset dangling pointer
+            init_dystring(&ds);
+
+            append_pipenode(&head, sep_args);
+            continue;
+        }
+        append_dystring(&ds, args[i]);
+    }
+    if(ds.curr_size > 0){
+        append_pipenode(&head, ds.strings);
+    }
+    else{
+        free(ds.strings);
+        ds.strings = NULL;
+    }
+
+    return head;
+}
+
+void 
+free_pipe_list(PipeNode *head)
+{
+    PipeNode *curr = head;
+    while(curr != NULL){
+        PipeNode *next = curr->next;
+        
+        if(curr->args != NULL){
+            for(int i=0; curr->args[i] != NULL; i++){
+                free(curr->args[i]);
+            }
+            free(curr->args);
+        }
+
+        free(curr);
+        curr = next;
+    }
 }
