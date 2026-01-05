@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+// https://github.com/tokenrove/build-your-own-shell/blob/master/stage_1.md
+
 //  =====================Helper functions====================
 
 /*
@@ -59,11 +61,11 @@ static int prev_status(const char* op, const int status){
 
 static void debug_args(char **args){
     size_t i = 0;
-    printf("Args: ");
+    printf("\nArgs: ");
     while(args[i]){
         printf("%s | ", args[i++]);
     }
-    printf("\n");
+    printf("\n\n");
 }
 
 //  ==========================================================
@@ -82,7 +84,7 @@ void myshell_loop(){
         char *line;
         while(!((line) = readline())){}
         char **args = parseline(line);
-        //debug_args(args);
+        debug_args(args);
         status = exec_cmdlist(args);
         
         free(line);
@@ -143,6 +145,7 @@ static int exec_cmdlist(char **args){
 static int exec_builtin(char **args);
 static int exec_external(char **args);
 static int exec_subshell(char **args);
+static int exec_pipeline(char **args);
 
 static int exec_cmd(char **args){
     if(!args[0])
@@ -153,6 +156,12 @@ static int exec_cmd(char **args){
         return (status == 0) ? 1 : 0;
     }
 
+    for(size_t i = 0; args[i] != NULL; i++){
+        if(strcmp(args[i], "|") == 0){
+            return exec_pipeline(args);
+        }
+    }
+
     if(!strcmp(args[0], "(")){ // subshell
         return exec_subshell(args);
     }
@@ -160,6 +169,125 @@ static int exec_cmd(char **args){
         return exec_builtin(args);
     }
     return exec_external(args);
+}
+
+
+/*
+ *  execute pipelines
+ */
+
+#define SHELL_CMD_CNT 16
+
+static int exec_pipeline(char **args){
+    size_t cmdcnt = SHELL_CMD_CNT;
+    char ***cmd = malloc(sizeof(char **) * cmdcnt);
+    size_t bufsize = SHELL_TOK_BUFSIZE;
+    size_t idx = 0;
+    size_t t_idx = 0; // token idx
+    cmd[0] = malloc(sizeof(char *) * bufsize);
+    for(size_t i = 0; args[i] != NULL; i++){
+        if(idx >= cmdcnt - 1){
+            cmdcnt += SHELL_CMD_CNT;
+            cmd = realloc(cmd, sizeof(char **) * cmdcnt);
+            if(cmd == NULL){
+                perror("Shell: pipeline cmd list realloc failed\n");
+                return 1;
+            }
+        }
+        
+        if(strcmp(args[i], "|") == 0){
+            cmd[idx++][t_idx] = NULL;
+            t_idx = 0;
+            cmd[idx] = malloc(sizeof(char*) * SHELL_TOK_BUFSIZE);
+            bufsize = SHELL_TOK_BUFSIZE;
+            continue;
+        }
+
+        if(t_idx >= bufsize - 1){
+            bufsize += SHELL_TOK_BUFSIZE;
+            char **temp = realloc(cmd[idx], bufsize * sizeof(char *));
+            if(temp == NULL){
+                perror("Shell: pipeline cmd list buf realloc failed\n");
+                return 1;
+            }
+            cmd[idx] = temp;
+        }
+
+        cmd[idx][t_idx++] = strdup(args[i]);
+    }
+    cmd[idx][t_idx] = NULL;
+    cmd[idx + 1] = NULL;
+
+    int num_cmds = idx + 1;
+    int pipefd[2];
+    int prev_pipefd = 0;
+    pid_t pids[num_cmds];
+
+    for(int i=0; i<num_cmds; i++){
+        if(i < num_cmds - 1){
+            if(pipe(pipefd) == -1){
+                perror("Shell: pipe failed\n");
+                return 1;
+            }
+        }
+
+        pid_t pid = fork();
+        pids[i] = pid;
+        if(pid < 0){
+            perror("Shell: pipeline fork failed\n");
+            return 1;
+        }
+        else if(pid == 0){
+            if(prev_pipefd != 0){
+                dup2(prev_pipefd, STDIN_FILENO);
+                close(prev_pipefd);
+            }
+
+            if(i < num_cmds - 1){
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[1]);
+            }
+
+            if(execvp(cmd[i][0], cmd[i]) == -1){
+                perror("Shell: pipeline execvp failed\n");
+                exit(1);
+            }
+        }
+        else{ // parent
+            if(prev_pipefd != 0)
+                close(prev_pipefd);
+            
+            if(i < num_cmds - 1){
+                close(pipefd[1]);
+                prev_pipefd = pipefd[0];
+            }
+        }
+    }
+
+    for(int i=0; i< num_cmds; i++){
+        for(int j = 0; cmd[i][j] != NULL; j++){
+            free(cmd[i][j]);
+        }
+        free(cmd[i]);
+    }
+    free(cmd);
+
+    int status;
+    int last_status;
+    for(int i=0; i<num_cmds; i++){
+        pid_t wpid = wait(&status);
+        if(wpid == pids[num_cmds - 1]){
+            if(WIFEXITED(status)){
+                last_status = WEXITSTATUS(status);
+            }
+            else{
+                last_status = 1;
+            }
+        }
+    }
+    
+    return last_status;
 }
 
 /*

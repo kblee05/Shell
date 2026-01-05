@@ -65,7 +65,12 @@ char *readline(){
  *  ================
  *  Part for parsing
  *  ================
+ * 
+ *  http://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_03
+ * 
  */ 
+
+ 
 
 #define SHELL_TOK_BUFSIZE 64
 #define SHELL_TOK_LENGTH 1024
