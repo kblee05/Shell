@@ -114,7 +114,7 @@ char **parseline(char* line){
             continue;
         }
 
-        if(c == '(' || c == ')' || c == '!'){
+        if(c == '(' || c == ')' || c == '!' || c == ';'){
             if(t_idx || is_empty) add_token(token, &t_idx, tokens, &pos);
             token[t_idx++] = c;
             add_token(token, &t_idx, tokens, &pos);
@@ -178,6 +178,31 @@ char **parseline(char* line){
                     token[t_idx++] = *val++;
                 }
             }
+        }
+        else if(c == '|'){
+            if(t_idx > 0){
+                add_token(token, &t_idx, tokens, &pos);
+            }
+
+            token[t_idx++] = line[i];
+            if(line[i + 1] == '|'){
+                token[t_idx++] = line[i++];
+            }
+            add_token(token, &t_idx, tokens, &pos);
+            continue;
+        }
+        else if(c == '<' || c == '>' || c == '&'){
+            if(t_idx > 0 && !(t_idx == 1 && isdigit(token[0]))){
+                add_token(token, &t_idx, tokens, &pos);
+            }
+
+            token[t_idx++] = line[i];
+
+            if(line[i+1] == '>' || line[i+1] == '&'){ // covers && too
+                token[t_idx++] = line[++i];
+            }
+            add_token(token, &t_idx, tokens, &pos);
+            continue;
         }
         else{
             token[t_idx++] = c;

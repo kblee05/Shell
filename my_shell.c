@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <fcntl.h>
 
 // https://github.com/tokenrove/build-your-own-shell/blob/master/stage_1.md
 
@@ -21,7 +22,9 @@
  *  check whether cmd is builtin or not
  */
 
-static int is_builtin(char *arg){
+static int
+is_builtin(char *arg)
+{
     if(!strcmp(arg, "cd")) return 1;
     if(!strcmp(arg, "quit")) return 1;
     return 0;
@@ -31,11 +34,13 @@ static int is_builtin(char *arg){
  *  Debug char** types
  */
 
-static void debug_args(char **args){
+static void
+debug_args(char **args)
+{
     size_t i = 0;
     printf("\nArgs: ");
     while(args[i]){
-        printf("%s | ", args[i++]);
+        printf("%s, ", args[i++]);
     }
     printf("\n\n");
 }
@@ -49,7 +54,9 @@ static void debug_args(char **args){
 
 static int exec_sep(char **args);
 
-void myshell_loop(){
+void
+myshell_loop()
+{
     int status;
     do{
         printf("< ");
@@ -79,18 +86,15 @@ exec_sep(char **args)
 {
     SepNode *curr = parse_sep(args);
     SepNode *head = curr;
+    int res = 0;
 
     while(curr != NULL){
-        if(exec_logic(curr->args) == 1){
-            free_sep_list(head);
-            return 1;
-        }
-
+        res = exec_logic(curr->args);
         curr = curr->next;
     }
 
     free_sep_list(head);
-    return 0;
+    return res;
 }
 
 /*
@@ -135,15 +139,22 @@ exec_logic(char **args)
 
 //static int exec_redirec(char **args);
 static int exec_cmd(char **args);
+static void _exec_cmd_forked(char **args);
 
 static int
 exec_pipe(char **args)
 {
+    if(args[0] != NULL && strcmp(args[0], "!") == 0){
+        return (exec_pipe(&args[1]) == 0) ? 1 : 0;
+    }
+    
     PipeNode *curr = parse_pipe(args);
     PipeNode *head = curr;
 
-    if(curr->next == NULL){
-        return exec_cmd(args);
+    if(curr->next == NULL){ // single (no pipe) builtin cmd -> DO NOT FORK
+        int res = exec_cmd(args);
+        free_pipe_list(head);
+        return res;
     }
 
     int pipefd[2];
@@ -179,8 +190,7 @@ exec_pipe(char **args)
                 close(pipefd[1]);
             }
 
-            int status = exec_cmd(curr->args);
-            exit(status);
+            _exec_cmd_forked(curr->args);
         }
         else{ // parent
             if(prev_pipefd != -1)
@@ -198,7 +208,6 @@ exec_pipe(char **args)
 
         curr = curr->next;
     }
-    free_pipe_list(head);
 
     int status;
     int last_status;
@@ -214,74 +223,181 @@ exec_pipe(char **args)
         }
     }
     
+    free_pipe_list(head);
     return last_status;
 }
-
 
 /*
  *  Check whether command is for subshell, builtin, or external
  */
 
-static int exec_builtin(char **args);
-static int exec_external(char **args);
-static int exec_subshell(char **args);
+static int run_builtin(char **args);
+static dystring *rm_parens(char **args);
+static void redirec(RedirNode* node);
 
-static int exec_cmd(char **args){
-    if(!args[0])
-        return 0;
+static void
+_exec_cmd_forked(char **args)
+{
+    if(args[0] == NULL){
+        exit(0);
+    }
+    
+    CmdNode *cmd = parse_cmd(args);
+    cmd->redirs = parse_redir(args);
+    redirec(cmd->redirs);
 
-    if(strcmp(args[0], "!") == 0){ // negation
-        int status = exec_cmd(&args[1]);
-        return (status == 0) ? 1 : 0;
-    }
 
-    if(!strcmp(args[0], "(")){ // subshell
-        return exec_subshell(args);
+    if(is_builtin(cmd->args[0])){
+        int res = run_builtin(cmd->args);
+        free_cmd(cmd);
+        cmd = NULL;
+        exit(res);
+    }    
+    
+    if(!strcmp(cmd->args[0], "(")){ // subshell
+        dystring *ds = rm_parens(args);
+        int res = exec_sep(ds->strings);
+        free_dystring(ds);
+        ds = NULL;
+        free_cmd(cmd);
+        cmd = NULL;
+        exit(res); // ds is freeded when fork() is reaped by parent
     }
-    else if(is_builtin(args[0])){
-        return exec_builtin(args);
+    
+    // external cmd
+    if(execvp(cmd->args[0], cmd->args) == -1){
+        perror("Shell: _cmd_forked execvp failed\n");
+        exit(127); // command not found
     }
-    return exec_external(args);
 }
 
-/*
- *  execute    ( foo )   in a subshell
- */
+static int
+exec_cmd(char **args){
+    if(args[0] == NULL){
+        return 0;
+    }
 
-static dystring *rm_parens(char **args);
+    CmdNode *cmd = parse_cmd(args);
+    if(!cmd) return 0;
+    cmd->redirs = parse_redir(args);
+    
+    if(is_builtin(cmd->args[0])){
+        int stdout_bak = dup(STDOUT_FILENO);
+        int stdin_bak = dup(STDIN_FILENO);
+        redirec(cmd->redirs);
+        
+        int res = run_builtin(cmd->args);
+        free(cmd);
+        cmd = NULL;
 
-static int exec_subshell(char **args){
-    dystring *ds = rm_parens(args);
+        dup2(stdout_bak, STDOUT_FILENO);
+        dup2(stdin_bak, STDIN_FILENO);
+        close(stdout_bak);
+        close(stdin_bak);
+        return res;
+    }
 
     pid_t pid = fork();
     if(pid < 0){
         perror("Shell: subshell fork failed\n");
         exit(1);
     }
-    else if(pid == 0){ // subshell
-        int status = exec_sep(ds->strings);
-        exit(status);
+    else if(pid == 0){
+        _exec_cmd_forked(args);
     }
-    else{ // parent
+    else{
         int status;
-        pid_t wpid = waitpid(pid, &status, WUNTRACED);
-        
-        free_dystring(ds);
-        free(ds);
-        ds = NULL;
-
-        if(wpid)
+        waitpid(pid, &status, WUNTRACED);
+        free(cmd);
+        cmd = NULL;
+        if(WIFEXITED(status)){
             return WEXITSTATUS(status);
+        }
         return 1;
     }
+}
+
+static void redirec(RedirNode* node){
+    if(node == NULL){
+        return;
+    }
+    
+    // redirection exists
+    RedirNode *curr = node;
+    while(curr != NULL){
+        int fd;
+        int target_fd = curr->target_fd;
+
+        switch (curr->type)
+        {
+        case REDIR_IN:
+            fd = open(curr->filename, O_RDONLY);
+            if(fd < 0){ perror("Shell: redirection failed\n"); return; }
+            dup2(fd, target_fd);
+            close(fd);
+            break;
+        case REDIR_OUT:
+            fd = open(curr->filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if(fd < 0){ perror("Shell: redirection failed\n"); return; }
+            dup2(fd, target_fd);
+            close(fd);
+            break;
+        case REDIR_APPEND:
+            fd = open(curr->filename, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if(fd < 0){ perror("Shell: redirection failed\n"); return; }
+            dup2(fd, target_fd);
+            close(fd);
+            break;
+        case REDIR_RDWR:
+            fd = open(curr->filename, O_RDWR | O_CREAT, 0644);
+            if(fd < 0){ perror("Shell: redirection failed\n"); return; }
+            dup2(fd, target_fd);
+            close(fd);
+            break;
+        case REDIR_DUP_IN:
+        case REDIR_DUP_OUT:
+            if(curr->filename[0] == '-'){
+                close(target_fd);
+            }
+            else{
+                int m = atoi(curr->filename);
+                dup2(m, target_fd);
+            }
+            break;
+        }
+
+        curr = curr->next;
+    }
+}
+
+/*
+ *  execute builtin commands
+ */
+
+static int
+run_builtin(char **args)
+{
+    if(!strcmp(args[0], "cd")){
+        int res = chdir(args[1]);
+        if(res == -1){
+            printf("cd: %s: No such file or directory\n", args[1]);
+            return 1;
+        }
+        return 0;
+    }
+    else if(!strcmp(args[0], "quit")){
+        exit(0);
+    }
+    return 1;
 }
 
 /*
  *  remove parenthesis tokens for subshell operations
  */
 
-static dystring *rm_parens(char **args){
-    //debug_args(args);
+static dystring
+*rm_parens(char **args)
+{
     if(strcmp(args[0], "(") != 0){
         perror("Shell: subshell does not start with paranthesis\n");
         exit(1);
@@ -305,54 +421,3 @@ static dystring *rm_parens(char **args){
 
     return ds;
 }
-
-
-
-/*
- *  execute builtin commands
- */
-
-static int exec_builtin(char **args){
-    if(!strcmp(args[0], "cd")){
-        int res = chdir(args[1]);
-        if(res == -1){
-            return 1;
-        }
-        return 0;
-    }
-    else if(!strcmp(args[0], "quit")){
-        exit(0);
-    }
-    return 1;
-}
-
-/*
- *  Execute commands that require fork - exec
- */
-
-static int
-exec_external(char **args)
-{
-    pid_t pid = fork();
-
-    if(pid < 0){
-        perror("Shell: fork failed\n");
-        return 1;
-    }
-    else if(pid == 0){ // Child process
-        if(execvp(args[0], args) == -1){
-            perror("Shell: fork child failed\n");
-            exit(1);
-        }
-        exit(0);
-    }
-    else{ // Parent process
-        int status;
-        waitpid(pid, &status, WUNTRACED);
-        if(WIFEXITED(status)){
-            return WEXITSTATUS(status);
-        }
-        return 1;
-    }
-}
-

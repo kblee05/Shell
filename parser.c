@@ -1,6 +1,23 @@
 #include "parser.h"
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+
+/*
+ *  Helper functions
+ */
+
+static int
+is_redir(char *arg){
+    if(isdigit(arg[0])){
+        arg = arg + 1;
+    }
+
+    if(arg[0] == '<' || arg[0] == '>' || arg[0] == '&'){
+        return 1;
+    }
+    return 0;
+}
 
 /*
  * ==============================================================
@@ -47,7 +64,7 @@ SepNode
         if(strcmp(args[i], "(") == 0) depth++;
         else if(strcmp(args[i], ")") == 0) depth--;
 
-        if(depth > 0){
+        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
             append_dystring(&ds, args[i]);
             continue;
         }
@@ -137,7 +154,7 @@ LogicNode
         if(strcmp(args[i], "(") == 0) depth++;
         else if(strcmp(args[i], ")") == 0) depth--;
 
-        if(depth > 0){
+        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
             append_dystring(&ds, args[i]);
             continue;
         }
@@ -225,7 +242,7 @@ PipeNode
         if(strcmp(args[i], "(") == 0) depth++;
         else if(strcmp(args[i], ")") == 0) depth--;
 
-        if(depth > 0){
+        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
             append_dystring(&ds, args[i]);
             continue;
         }
@@ -268,4 +285,182 @@ free_pipe_list(PipeNode *head)
         free(curr);
         curr = next;
     }
+}
+
+/*
+ * ==============================================================
+ *
+ *                       Parse redirections >
+ * 
+ * ==============================================================
+ */
+
+static void
+append_redirnode(RedirNode **head, RedirType type, int target_fd, char *filename)
+{
+    RedirNode *new_node = (RedirNode *)malloc(sizeof(RedirNode));
+    if(new_node == NULL) return;
+
+    new_node->type = type;
+    new_node->target_fd = target_fd;
+    new_node->filename = filename;
+    new_node->next = NULL;
+
+    if(*head == NULL){
+        *head = new_node;
+        return;
+    }
+
+    RedirNode *curr = *head;
+    while(curr->next != NULL){
+        curr = curr->next;
+    }
+
+    curr->next = new_node;
+}
+
+RedirNode
+*parse_redir(char **args)
+{
+    RedirNode *head = NULL;
+    int depth = 0;
+    
+    for(int i=0; args[i] != NULL; i++){
+        if (strcmp(args[i], "(") == 0) { depth++; continue; }
+        if (strcmp(args[i], ")") == 0) { depth--; continue; }
+        if (depth > 0) continue;
+
+        if(!is_redir(args[i])){ continue; }
+
+        RedirType type;
+        int target_fd = -1;
+        char *filename = NULL;
+        int start = 0;
+
+        if(isdigit(args[i][0])){
+            target_fd = args[i][0] - '0';
+            start = 1;
+        }
+
+        if(strcmp(&args[i][start], "<") == 0){
+            type = REDIR_IN;
+            if(target_fd == -1){
+                target_fd = 0;
+            }
+        }
+        else if(strcmp(&args[i][start], ">") == 0){
+            type = REDIR_OUT;
+            if(target_fd == -1){
+                target_fd = 1;
+            }
+        }
+        else if(strcmp(&args[i][start], ">>") == 0){
+            type = REDIR_APPEND;
+            if(target_fd == -1){
+                target_fd = 1;
+            }
+        }
+        else if(strcmp(&args[i][start], "<>") == 0){
+            type = REDIR_RDWR;
+            if(target_fd == -1){
+                target_fd = 0;
+            }
+        }
+        else if(strcmp(&args[i][start], "<&") == 0){
+            type = REDIR_DUP_IN;
+            if(target_fd == -1){
+                target_fd = 0;
+            }
+        }
+        else if(strcmp(&args[i][start], "&>") == 0){
+            type = REDIR_DUP_OUT;
+            if(target_fd == -1){
+                target_fd = 1;
+             }
+        }
+
+        if(args[i + 1] != NULL){
+            filename = strdup(args[++i]);
+        }
+
+        append_redirnode(&head, type, target_fd, filename);
+    }
+
+    return head;
+}
+
+void
+free_redir_list(RedirNode *head)
+{
+    RedirNode *curr = head;
+    while(curr != NULL){
+        RedirNode *next = curr->next;
+        
+        if(curr->filename != NULL){
+            free(curr->filename);
+        }
+
+        free(curr);
+        curr = next;
+    }
+}
+
+/*
+ * ==============================================================
+ *
+ *                      Parse simple commands
+ * 
+ * ==============================================================
+ */
+
+CmdNode
+*parse_cmd(char **args)
+{
+    CmdNode *cmd = (CmdNode *)malloc(sizeof(CmdNode));
+    cmd->redirs = NULL;
+    dystring ds;
+    init_dystring(&ds);
+    int depth = 0;
+
+    for(int i=0; args[i] != NULL; i++){
+        if(strcmp(args[i], "(") == 0) depth++;
+        else if(strcmp(args[i], ")") == 0) depth--;
+
+        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
+            append_dystring(&ds, args[i]);
+            continue;
+        }
+
+        if(is_redir(args[i])){
+            i++; // skip redir operator and filename
+            if(args[i] == NULL) break;
+            continue;
+        }
+
+        append_dystring(&ds, args[i]);
+    }
+    if(ds.curr_size > 0){
+        cmd->args = ds.strings;
+    }
+    else{
+        free(ds.strings);
+        free(cmd); // no cmd
+        return NULL;
+    }
+
+    return cmd;
+}
+
+void
+free_cmd(CmdNode *node)
+{
+    if(node->args != NULL){
+        for(int i=0; node->args[i] != NULL; i++){
+            free(node->args[i]);
+        }
+        free(node->args);
+    }
+
+    free_redir_list(node->redirs);
+    free(node);
 }
