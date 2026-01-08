@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
 #include "my_shell.h"
 #include "parser.h"
 #include "dynamicstring.h"
 #include "tokenizer.h"
+#include "sighandler.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -10,6 +12,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <signal.h>
 
 // https://github.com/tokenrove/build-your-own-shell/blob/master/stage_1.md
 
@@ -54,9 +57,17 @@ debug_args(char **args)
 
 static int exec_sep(char **args);
 
+static sigset_t mask_all, mask_one, prev_one;
+
 void
 myshell_loop()
 {
+    sigfillset(&mask_all);
+    sigemptyset(&mask_one);
+    sigaddset(&mask_one, SIGCHLD);
+    signal_wrapper(SIGCHLD, sigchld_handler);
+    // init jobs
+
     int status;
     do{
         printf("< ");
@@ -79,7 +90,7 @@ myshell_loop()
  *  execute separators ; &
  */
 
-static int exec_logic(char ** args);
+static int exec_logic(char ** args, SepType sep_type);
 
 static int
 exec_sep(char **args)
@@ -89,7 +100,7 @@ exec_sep(char **args)
     int res = 0;
 
     while(curr != NULL){
-        res = exec_logic(curr->args);
+        res = exec_logic(curr->args, curr->type);
         curr = curr->next;
     }
 
@@ -101,10 +112,10 @@ exec_sep(char **args)
  *  execute logic operators && ||
  */
 
-static int exec_pipe(char **args);
+static int exec_pipe(char **args, SepType sep_type);
 
 static int
-exec_logic(char **args)
+exec_logic(char **args, SepType sep_type)
 {
     LogicNode *curr = parse_logic(args);
     LogicNode *head = curr;
@@ -113,7 +124,7 @@ exec_logic(char **args)
 
     while(curr){
         if(!skip){
-            last_status = exec_pipe(curr->args);
+            last_status = exec_pipe(curr->args, sep_type);
         }
 
         if(curr->type == LOGIC_AND){
@@ -138,21 +149,21 @@ exec_logic(char **args)
  */
 
 //static int exec_redirec(char **args);
-static int exec_cmd(char **args);
+static int exec_cmd(char **args, SepType sep_type);
 static void _exec_cmd_forked(char **args);
 
 static int
-exec_pipe(char **args)
+exec_pipe(char **args, SepType sep_type)
 {
     if(args[0] != NULL && strcmp(args[0], "!") == 0){
-        return (exec_pipe(&args[1]) == 0) ? 1 : 0;
+        return (exec_pipe(&args[1], sep_type) == 0) ? 1 : 0;
     }
     
     PipeNode *curr = parse_pipe(args);
     PipeNode *head = curr;
 
-    if(curr->next == NULL){ // single (no pipe) builtin cmd -> DO NOT FORK
-        int res = exec_cmd(args);
+    if(curr->next == NULL && is_builtin(curr->args[0])){ // single (no pipe) builtin cmd -> DO NOT FORK
+        int res = run_builtin(curr->args);
         free_pipe_list(head);
         return res;
     }
@@ -161,6 +172,9 @@ exec_pipe(char **args)
     int prev_pipefd = -1;
     pid_t last_pid;
     int child_count = 0;
+    pid_t pgid = -1;
+
+    // need to take care for SYNC or ASYNC
 
     while(curr != NULL){
         child_count++;
@@ -172,13 +186,23 @@ exec_pipe(char **args)
             }
         }
 
+        sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // block sig child BEFORE race(fork)
         pid_t pid = fork();
         last_pid = pid;
+
         if(pid < 0){
             perror("Shell: pipeline fork failed\n");
             return 1;
         }
         else if(pid == 0){
+            sigprocmask(SIG_SETMASK, &prev_one, NULL);
+            if(pgid == -1){ // first child of the proccess -> leader of process group
+                setpgid(0, 0);
+            }
+            else{
+                setpgid(0, pgid);
+            }
+
             if(prev_pipefd != -1){
                 dup2(prev_pipefd, STDIN_FILENO);
                 close(prev_pipefd);
@@ -193,6 +217,17 @@ exec_pipe(char **args)
             _exec_cmd_forked(curr->args);
         }
         else{ // parent
+            sigprocmask(SIG_BLOCK, &mask_all, &prev_one);
+            // add job
+            sigprocmask(SIG_SETMASK, &prev_one, NULL);
+
+            if(pgid == -1){
+                pgid = pid; // save the first child proccess's pid and pgid
+            }
+            else{
+                setpgid(pid, pgid);
+            }
+
             if(prev_pipefd != -1)
                 close(prev_pipefd); // need to close prev_pipefd afterwards because it became a FD (pipefd[0])
             
@@ -207,6 +242,10 @@ exec_pipe(char **args)
         }
 
         curr = curr->next;
+    }
+
+    if(sep_type == SEP_ASYNC){ // background process
+        return 0; // regard background process as 'success'
     }
 
     int status;
@@ -271,8 +310,9 @@ _exec_cmd_forked(char **args)
     }
 }
 
+/*
 static int
-exec_cmd(char **args){
+exec_cmd(char **args, SepType sep_type){
     if(args[0] == NULL){
         return 0;
     }
@@ -306,6 +346,10 @@ exec_cmd(char **args){
         _exec_cmd_forked(args);
     }
     else{
+        if(sep_type == SEP_ASYNC){ // background process
+            return 0; // consider background process as 'success'
+        }
+
         int status;
         waitpid(pid, &status, WUNTRACED);
         free(cmd);
@@ -316,6 +360,7 @@ exec_cmd(char **args){
         return 1;
     }
 }
+*/
 
 static void redirec(RedirNode* node){
     if(node == NULL){

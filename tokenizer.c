@@ -121,6 +121,13 @@ char **parseline(char* line){
             is_empty = 0;
             continue;
         }
+        else if(c == '&' && isspace(line[i + 1])){ // & : background processes
+            if(t_idx || is_empty) add_token(token, &t_idx, tokens, &pos);
+            token[t_idx++] = c;
+            add_token(token, &t_idx, tokens, &pos);
+            i++; // skip whitespace
+            continue;
+        }
         else if(c == '\\'){
             i++;
             char next = line[i];
