@@ -64,6 +64,7 @@ debug_args(char **args)
 static int exec_sep(char **args);
 
 static sigset_t mask_all, mask_one, prev_one, prev_all;
+static pid_t sh_pgid;
 
 void
 myshell_loop()
@@ -72,6 +73,12 @@ myshell_loop()
     sigemptyset(&mask_one);
     sigaddset(&mask_one, SIGCHLD);
     signal_wrapper(SIGCHLD, sigchld_handler);
+    sh_pgid = getpgrp();
+    signal_wrapper(SIGINT, SIG_IGN);
+    signal_wrapper(SIGTSTP, SIG_IGN);
+    signal_wrapper(SIGTTIN, SIG_IGN);
+    signal_wrapper(SIGTTOU, SIG_IGN);
+
     // init jobs
 
     int status;
@@ -212,8 +219,18 @@ exec_pipe(char **args, SepType sep_type)
         }
         else if(pid == 0){
             sigprocmask(SIG_SETMASK, &prev_one, NULL);
+            if(sep_type == SEP_SYNC){
+                signal_wrapper(SIGINT, SIG_DFL);
+                signal_wrapper(SIGTSTP, SIG_DFL);
+                signal_wrapper(SIGTTIN, SIG_DFL);
+                signal_wrapper(SIGTTOU, SIG_DFL);
+            }
+
             if(pgid == -1){ // first child of the proccess -> leader of process group
                 setpgid(0, 0);
+                if(sep_type == SEP_SYNC){
+                    tcsetpgrp(0, getpid());
+                }
             }
             else{
                 setpgid(0, pgid);
@@ -237,6 +254,9 @@ exec_pipe(char **args, SepType sep_type)
             if(pgid == -1){
                 pgid = pid; // save the first child proccess's pid / pgid
                 setpgid(pid, pgid);
+                if(sep_type == SEP_SYNC){
+                    tcsetpgrp(0, pgid);
+                }
             }
             else{
                 setpgid(pid, pgid);
@@ -267,10 +287,9 @@ exec_pipe(char **args, SepType sep_type)
     }
 
     while(fg_child_count > 0){ // foreground process
-        printf("fg child count: %d\n", fg_child_count);
         sigsuspend(&prev_one);
     }
-    printf("fg reap finished\n");
+    tcsetpgrp(0, sh_pgid);
     sigprocmask(SIG_SETMASK, &prev_one, NULL);
     
     free_pipe_list(head);

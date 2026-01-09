@@ -56,6 +56,7 @@ deletejob(pid_t pid)
             jobs[i].jid = 0;
             jobs[i].state = UNDEF;
             jobs[i].cmdline[0] = '\0';
+            jid--;
             return 0;
         }
     }
@@ -72,9 +73,17 @@ exec_jobctrl(char **args)
     sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
     
     if(strcmp(args[0], "jobs") == 0){
+        int no_jobs = 1;
+
         for(int i =0; i<MAX_JOBS; i++){
-            if(jobs[i].pid != 0)
+            if(jobs[i].pid != 0){
+                no_jobs = 0;
                 printf("jid: %d, state: %d, cmd: %s\n", jobs[i].jid, jobs[i].state, jobs[i].cmdline);
+            }
+        }
+
+        if(no_jobs){
+            printf("No jobs running\n");
         }
         
         sigprocmask(SIG_SETMASK, &prev_all, NULL);
