@@ -81,7 +81,7 @@ SepNode
         append_dystring(&ds, args[i]);
     }
     if(ds.curr_size > 0){
-        append_sepnode(&head, ds.strings, SEP_NONE);
+        append_sepnode(&head, ds.strings, SEP_SYNC);
     }
     else{
         free(ds.strings);

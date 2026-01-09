@@ -1,27 +1,22 @@
 CC = gcc
-CFLAGS = -Wall -g
+CFLAGS = -Wall -Wextra -g -D_POSIX_C_SOURCE=200809L
 
-TARGET = main
+TARGET = myshell
+
+SRCS = main.c my_shell.c sighandler.c jobcontrol.c parser.c dynamicstring.c tokenizer.c
+OBJS = $(SRCS:.c=.o)
+
+HEADERS = my_shell.h sighandler.h jobcontrol.h parser.h dynamicstring.h tokenizer.h
 
 all: $(TARGET)
 
-$(TARGET): main.o my_shell.o parser.o tokenizer.o dynamicstring.o
-	$(CC) -o $(TARGET) main.o my_shell.o parser.o tokenizer.o dynamicstring.o
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
 
-main.o: main.c my_shell.h parser.h tokenizer.h dynamicstring.h
-	$(CC) $(CFLAGS) -c main.c
-
-my_shell.o: my_shell.c my_shell.h parser.h tokenizer.h dynamicstring.h
-	$(CC) $(CFLAGS) -c my_shell.c
-
-parser.o: parser.c parser.h
-	$(CC) $(CFLAGS) -c parser.c
-
-tokenizer.o: tokenizer.c tokenizer.h
-	$(CC) $(CFLAGS) -c tokenizer.c
-
-dynamicstring.o: dynamicstring.c dynamicstring.h
-	$(CC) $(CFLAGS) -c dynamicstring.c
+%.o: %.c $(HEADERS)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(OBJS) $(TARGET)
+
+.PHONY: all clean

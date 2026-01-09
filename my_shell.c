@@ -4,6 +4,8 @@
 #include "dynamicstring.h"
 #include "tokenizer.h"
 #include "sighandler.h"
+#include "jobcontrol.h"
+#include "sighandler.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -20,6 +22,10 @@
 
 #define SHELL_CMD_CNT 16
 #define SHELL_TOK_BUFSIZE 64
+
+volatile sig_atomic_t fg_child_count; // used for sigchld handler
+volatile pid_t last_pid;
+volatile int last_status;
 
 /*
  *  check whether cmd is builtin or not
@@ -57,7 +63,7 @@ debug_args(char **args)
 
 static int exec_sep(char **args);
 
-static sigset_t mask_all, mask_one, prev_one;
+static sigset_t mask_all, mask_one, prev_one, prev_all;
 
 void
 myshell_loop()
@@ -74,9 +80,15 @@ myshell_loop()
         char *line;
         while(!((line) = readline())){}
         char **args = parseline(line);
-        //debug_args(args);
-        status = exec_sep(args);
-        
+        debug_args(args);
+
+        if(strcmp(args[0], "jobs") == 0 || strcmp(args[0], "fg") == 0 || strcmp(args[0], "bg") == 0){
+            exec_jobctrl(args);
+        }
+        else{
+            status = exec_sep(args);
+        }
+
         free(line);
         size_t i = 0;
         while(args[i])
@@ -149,8 +161,12 @@ exec_logic(char **args, SepType sep_type)
  */
 
 //static int exec_redirec(char **args);
-static int exec_cmd(char **args, SepType sep_type);
+//static int exec_cmd(char **args, SepType sep_type);
 static void _exec_cmd_forked(char **args);
+static int run_builtin(char **args);
+
+// volatile sig_atomic_t child_count; // used for sigchld handler
+// volatile sig_atomic_t fg_pgid;
 
 static int
 exec_pipe(char **args, SepType sep_type)
@@ -170,14 +186,15 @@ exec_pipe(char **args, SepType sep_type)
 
     int pipefd[2];
     int prev_pipefd = -1;
-    pid_t last_pid;
-    int child_count = 0;
     pid_t pgid = -1;
+    fg_child_count = 0;
 
-    // need to take care for SYNC or ASYNC
+    sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // block sig child BEFORE race(fork)
 
     while(curr != NULL){
-        child_count++;
+        if(sep_type == SEP_SYNC){
+            fg_child_count++;
+        }
 
         if(curr->next != NULL){
             if(pipe(pipefd) == -1){
@@ -186,7 +203,6 @@ exec_pipe(char **args, SepType sep_type)
             }
         }
 
-        sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // block sig child BEFORE race(fork)
         pid_t pid = fork();
         last_pid = pid;
 
@@ -217,16 +233,17 @@ exec_pipe(char **args, SepType sep_type)
             _exec_cmd_forked(curr->args);
         }
         else{ // parent
-            sigprocmask(SIG_BLOCK, &mask_all, &prev_one);
-            // add job
-            sigprocmask(SIG_SETMASK, &prev_one, NULL);
-
+            sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
             if(pgid == -1){
-                pgid = pid; // save the first child proccess's pid and pgid
+                pgid = pid; // save the first child proccess's pid / pgid
+                setpgid(pid, pgid);
             }
             else{
                 setpgid(pid, pgid);
             }
+            addjob(pid, (sep_type == SEP_SYNC) ? FG : BG, curr->args[0]);
+            sigprocmask(SIG_SETMASK, &prev_all, NULL);
+
 
             if(prev_pipefd != -1)
                 close(prev_pipefd); // need to close prev_pipefd afterwards because it became a FD (pipefd[0])
@@ -245,22 +262,16 @@ exec_pipe(char **args, SepType sep_type)
     }
 
     if(sep_type == SEP_ASYNC){ // background process
+        sigprocmask(SIG_SETMASK, &prev_one, NULL);
         return 0; // regard background process as 'success'
     }
 
-    int status;
-    int last_status;
-    for(int i=0; i<child_count; i++){
-        pid_t wpid = wait(&status);
-        if(wpid == last_pid){
-            if(WIFEXITED(status)){
-                last_status = WEXITSTATUS(status);
-            }
-            else{
-                last_status = 1;
-            }
-        }
+    while(fg_child_count > 0){ // foreground process
+        printf("fg child count: %d\n", fg_child_count);
+        sigsuspend(&prev_one);
     }
+    printf("fg reap finished\n");
+    sigprocmask(SIG_SETMASK, &prev_one, NULL);
     
     free_pipe_list(head);
     return last_status;
@@ -309,58 +320,6 @@ _exec_cmd_forked(char **args)
         exit(127); // command not found
     }
 }
-
-/*
-static int
-exec_cmd(char **args, SepType sep_type){
-    if(args[0] == NULL){
-        return 0;
-    }
-
-    CmdNode *cmd = parse_cmd(args);
-    if(!cmd) return 0;
-    cmd->redirs = parse_redir(args);
-    
-    if(is_builtin(cmd->args[0])){
-        int stdout_bak = dup(STDOUT_FILENO);
-        int stdin_bak = dup(STDIN_FILENO);
-        redirec(cmd->redirs);
-        
-        int res = run_builtin(cmd->args);
-        free(cmd);
-        cmd = NULL;
-
-        dup2(stdout_bak, STDOUT_FILENO);
-        dup2(stdin_bak, STDIN_FILENO);
-        close(stdout_bak);
-        close(stdin_bak);
-        return res;
-    }
-
-    pid_t pid = fork();
-    if(pid < 0){
-        perror("Shell: subshell fork failed\n");
-        exit(1);
-    }
-    else if(pid == 0){
-        _exec_cmd_forked(args);
-    }
-    else{
-        if(sep_type == SEP_ASYNC){ // background process
-            return 0; // consider background process as 'success'
-        }
-
-        int status;
-        waitpid(pid, &status, WUNTRACED);
-        free(cmd);
-        cmd = NULL;
-        if(WIFEXITED(status)){
-            return WEXITSTATUS(status);
-        }
-        return 1;
-    }
-}
-*/
 
 static void redirec(RedirNode* node){
     if(node == NULL){

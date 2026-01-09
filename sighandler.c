@@ -1,9 +1,13 @@
-#include "sighandler.h"
 #define _POSIX_C_SOURCE 200809L
+#include "sighandler.h"
+#include "my_shell.h"
+#include "jobcontrol.h"
 #include <signal.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <sys/wait.h>
+#include <stdlib.h>
 
 /*
  *  struct sigaction {
@@ -15,10 +19,8 @@
  *  }
  */
 
-typedef void (*sighandler_t)(int);
-
 sighandler_t
-*signal_wrapper(int signum, sighandler_t *handler){
+signal_wrapper(int signum, sighandler_t handler){
     struct sigaction action, old_action;
 
     memset(&action, 0, sizeof(action));
@@ -40,16 +42,38 @@ sigchld_handler(int sig)
     int olderrno = errno;
     sigset_t mask_all, prev_all;
     pid_t pid;
+    int status;
 
     sigfillset(&mask_all);
-    while((pid = waitpid(-1, NULL, 0)) > 0){
+    while((pid = waitpid(-1, &status, WNOHANG)) > 0){
         sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
-        // delete job
+
+        int is_fg = 0;
+
+        for(int i = 0 ;i < MAX_JOBS; i++){
+            if(jobs[i].pid == pid && jobs[i].state == FG){
+                is_fg = 1;
+                break;
+            }
+        }
+
+        if(is_fg){
+            fg_child_count--;
+        }
+
+        if(pid == last_pid && WIFEXITED(status)){
+            last_status = WEXITSTATUS(status);
+        }
+        else{
+            last_status = 1;
+        }
+
+        deletejob(pid);
         sigprocmask(SIG_SETMASK, &prev_all, NULL);
     }
 
     if(errno != ECHILD){
-        write(2, "sigchld handler\n", 16);
+        perror("sigchld handler error\n");
     }
     errno = olderrno;
 }

@@ -6,7 +6,6 @@
 typedef enum{
     SEP_SYNC,  // ;
     SEP_ASYNC, // &
-    SEP_NONE
 } SepType;
 
 typedef struct SepNode{
