@@ -7,6 +7,7 @@
 extern volatile sig_atomic_t fg_child_count; // used for sigchld handler
 extern volatile pid_t last_pid;
 extern volatile int last_status;
+extern pid_t sh_pgid;
 
 void myshell_loop();
 

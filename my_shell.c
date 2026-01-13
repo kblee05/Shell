@@ -64,7 +64,7 @@ debug_args(char **args)
 static int exec_sep(char **args);
 
 static sigset_t mask_all, mask_one, prev_one, prev_all;
-static pid_t sh_pgid;
+pid_t sh_pgid;
 
 void
 myshell_loop()
@@ -194,6 +194,7 @@ exec_pipe(char **args, SepType sep_type)
     int pipefd[2];
     int prev_pipefd = -1;
     pid_t pgid = -1;
+    int j_idx = -1;
     fg_child_count = 0;
 
     sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // block sig child BEFORE race(fork)
@@ -253,15 +254,17 @@ exec_pipe(char **args, SepType sep_type)
             sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
             if(pgid == -1){
                 pgid = pid; // save the first child proccess's pid / pgid
-                setpgid(pid, pgid);
+                j_idx = addjob(pid, (sep_type == SEP_SYNC) ? FG : BG, curr->args[0]);
                 if(sep_type == SEP_SYNC){
                     tcsetpgrp(0, pgid);
                 }
             }
-            else{
-                setpgid(pid, pgid);
+            setpgid(pid, pgid);
+
+            if(j_idx != -1 && jobs[j_idx].n_procs < MAX_PROCESS){
+                jobs[j_idx].pids[jobs[j_idx].n_procs++] = pid;
             }
-            addjob(pid, (sep_type == SEP_SYNC) ? FG : BG, curr->args[0]);
+
             sigprocmask(SIG_SETMASK, &prev_all, NULL);
 
 
@@ -409,6 +412,12 @@ run_builtin(char **args)
         return 0;
     }
     else if(!strcmp(args[0], "quit")){
+        for(int i = 0; i<MAX_JOBS; i++){
+            if(jobs[i].pgid != 0){
+                kill(-jobs[i].pgid, SIGCONT);
+                kill(-jobs[i].pgid, SIGHUP);
+            }
+        }
         exit(0);
     }
     return 1;

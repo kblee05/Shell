@@ -36,6 +36,19 @@ signal_wrapper(int signum, sighandler_t handler){
     return old_action.sa_handler;
 }
 
+static int
+get_job_idx(pid_t pid)
+{
+    for(int i=0; i<MAX_JOBS; i++){
+        for(int j=0; j<jobs[i].n_procs; j++){
+            if(jobs[i].pids[j] == pid)
+                return i;
+        }
+    }
+
+    return -1;
+}
+
 void
 sigchld_handler(int sig)
 {
@@ -45,20 +58,27 @@ sigchld_handler(int sig)
     int status;
 
     sigfillset(&mask_all);
-    while((pid = waitpid(-1, &status, WNOHANG)) > 0){
+    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0){
         sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
 
-        int is_fg = 0;
+        int j_idx = get_job_idx(pid);
+        if(j_idx == -1) continue;
+        job_t *job = &jobs[j_idx];
 
-        for(int i = 0 ;i < MAX_JOBS; i++){
-            if(jobs[i].pid == pid && jobs[i].state == FG){
-                is_fg = 1;
-                break;
-            }
+        if(WIFEXITED(status) || WIFSIGNALED(status)){
+            job->n_finished++;
         }
 
-        if(is_fg){
+        if(WIFSTOPPED(status)){
+            job->state = ST;
+        }
+
+        if(job->state == FG || WIFSTOPPED(status)){
             fg_child_count--;
+        }
+
+        if(job->n_procs == job->n_finished){
+            deletejob(job);
         }
 
         if(pid == last_pid && WIFEXITED(status)){
@@ -68,12 +88,11 @@ sigchld_handler(int sig)
             last_status = 1;
         }
 
-        deletejob(pid);
         sigprocmask(SIG_SETMASK, &prev_all, NULL);
     }
 
-    if(errno != ECHILD){
-        perror("sigchld handler error\n");
+    if(pid == - 1 && errno != ECHILD){
+        fprintf(stderr, "sigchld handler error\n");
     }
     errno = olderrno;
 }
