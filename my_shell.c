@@ -20,13 +20,6 @@
 
 //  =====================Helper functions====================
 
-#define SHELL_CMD_CNT 16
-#define SHELL_TOK_BUFSIZE 64
-
-volatile sig_atomic_t fg_child_count; // used for sigchld handler
-volatile pid_t last_pid;
-volatile int last_status;
-
 /*
  *  check whether cmd is builtin or not
  */
@@ -39,69 +32,90 @@ is_builtin(char *arg)
     return 0;
 }
 
-/*
- *  Debug char** types
- */
-
-static void
-debug_args(char **args)
-{
-    size_t i = 0;
-    printf("\nArgs: ");
-    while(args[i]){
-        printf("%s, ", args[i++]);
-    }
-    printf("\n\n");
-}
-
 //  ==========================================================
 
+pid_t shell_pgid;
+struct termios shell_tmodes;
+int shell_terminal;
+int shell_is_interactive;
+sigset_t mask_chld, prev_chld;
+
+void
+init_shell()
+{
+    shell_terminal = STDERR_FILENO;
+    shell_is_interactive = isatty(shell_terminal);
+
+    if(shell_is_interactive)
+    {
+        while(tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp()))
+            kill(-shell_pgid, SIGTTIN);
+        
+        signal(SIGINT, SIG_IGN);
+        signal(SIGQUIT, SIG_IGN);
+        signal(SIGTSTP, SIG_IGN);
+        signal(SIGTTIN, SIG_IGN);
+        signal(SIGTTOU, SIG_IGN);
+        signal(SIGCHLD, SIG_IGN);
+        
+        shell_pgid = getpid();
+        if(setpgid(shell_pgid, shell_pgid) < 0)
+        {
+            perror("Couldn't put shell in it's own process group");
+            exit(1);
+        }
+
+        tcsetpgrp(shell_terminal, shell_pgid);
+        tcgetattr(shell_terminal, &shell_tmodes);
+
+        signal_wrapper(SIGCHLD, sigchld_handler);
+        sigemptyset(&mask_chld);
+        sigaddset(&mask_chld, SIGCHLD);
+        sigprocmask(SIG_UNBLOCK, &mask_chld, NULL);
+    }
+}
 
 /*
  *  Start of the shell
  */
 
-static int exec_sep(char **args);
-
-static sigset_t mask_all, mask_one, prev_one, prev_all;
-pid_t sh_pgid;
+static int exec_sep(char *str);
 
 void
 myshell_loop()
 {
-    sigfillset(&mask_all);
-    sigemptyset(&mask_one);
-    sigaddset(&mask_one, SIGCHLD);
-    signal_wrapper(SIGCHLD, sigchld_handler);
-    sh_pgid = getpgrp();
-    signal_wrapper(SIGINT, SIG_IGN);
-    signal_wrapper(SIGTSTP, SIG_IGN);
-    signal_wrapper(SIGTTIN, SIG_IGN);
-    signal_wrapper(SIGTTOU, SIG_IGN);
+    init_shell();
 
-    // init jobs
-
-    int status;
-    do{
+    do
+    {
+        do_job_notification();
         printf("< ");
         char *line;
         while(!((line) = readline())){}
-        char **args = parseline(line);
-        debug_args(args);
 
-        if(strcmp(args[0], "jobs") == 0 || strcmp(args[0], "fg") == 0 || strcmp(args[0], "bg") == 0){
-            exec_jobctrl(args);
+        if(strncmp(line, "jobs", 4) == 0)
+        {
+            job *j = first_job;
+            for(; j; j = j->next)
+                format_job_info(j, (j->first_process->stopped) ? "stopped" : "running");
         }
-        else{
-            status = exec_sep(args);
+        else if(strncmp(line, "fg", 2) == 0)
+        {
+            pid_t pgid = atoi(&line[3]);
+            job *j = find_job(pgid);
+            continue_job(j, 1);
         }
+        else if(strncmp(line, "bg", 2) == 0)
+        {
+            pid_t pgid = atoi(&line[3]);
+            job *j = find_job(pgid);
+            continue_job(j, 0);
+        }
+        else
+            exec_sep(line);
 
         free(line);
-        size_t i = 0;
-        while(args[i])
-            free(args[i++]);
-        free(args);
-    }while(1);
+    } while(1);
 }
 
 
@@ -109,19 +123,17 @@ myshell_loop()
  *  execute separators ; &
  */
 
-static int exec_logic(char ** args, SepType sep_type);
+static int exec_logic(char *str, int foreground);
 
 static int
-exec_sep(char **args)
+exec_sep(char *str)
 {
-    SepNode *curr = parse_sep(args);
+    SepNode *curr = parse_sep(str);
     SepNode *head = curr;
     int res = 0;
 
-    while(curr != NULL){
-        res = exec_logic(curr->args, curr->type);
-        curr = curr->next;
-    }
+    for(; curr; curr = curr->next)
+        res = exec_logic(curr->cmd, (curr->type == SEP_SYNC) ? 1 : 0);
 
     free_sep_list(head);
     return res;
@@ -131,36 +143,163 @@ exec_sep(char **args)
  *  execute logic operators && ||
  */
 
-static int exec_pipe(char **args, SepType sep_type);
+static int exec_job(char *str, int foreground);
 
 static int
-exec_logic(char **args, SepType sep_type)
+exec_logic(char *str, int foreground)
 {
-    LogicNode *curr = parse_logic(args);
+    LogicNode *curr = parse_logic(str);
     LogicNode *head = curr;
     int last_status = 0;
     int skip = 0;
 
-    while(curr){
-        if(!skip){
-            last_status = exec_pipe(curr->args, sep_type);
-        }
+    for(; curr; curr = curr->next)
+    {
+        if(!skip)
+            last_status = exec_job(curr->cmd, foreground);
 
-        if(curr->type == LOGIC_AND){
-            skip = (last_status != 0);
-        }
-        else if(curr->type == LOGIC_OR){
-            skip = (last_status == 0);
-        }
-        else{
-            skip = 0;
-        }
-
-        curr = curr->next;
+        if(curr->type == LOGIC_AND)     skip = (last_status != 0);
+        else if(curr->type == LOGIC_OR) skip = (last_status == 0);
+        else                            skip = 0;
     }
 
     free_logic_list(head);
     return last_status;
+}
+
+void
+launch_process(process *p, pid_t pgid,
+               int infile, int outfile, int errfile,
+               int foreground)
+{
+    pid_t pid;
+
+    if(shell_is_interactive)
+    {
+        pid = getpid();
+        if(pgid == 0) pgid = pid;
+        setpgid(pid, pgid);
+        if(foreground)
+            tcsetpgrp(shell_terminal, pgid);
+    }
+
+    if(infile != STDIN_FILENO)
+    {
+        dup2(infile, STDIN_FILENO);
+        close(infile);
+    }
+    if(outfile != STDOUT_FILENO)
+    {
+        dup2(outfile, STDOUT_FILENO);
+        close(outfile);
+    }
+    if(errfile != STDERR_FILENO)
+    {
+        dup2(errfile, STDERR_FILENO);
+        close(errfile);
+    }
+    
+    sigprocmask(SIG_SETMASK, &prev_chld, NULL);
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+    signal(SIGTTIN, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
+
+    execvp(p->argv[0], p->argv);
+    perror("execvp"); // should not reach here
+    exit(1);
+}
+
+void
+launch_job(job *j, int foreground)
+{
+    process *p;
+    pid_t pid;
+    int mypipe[2], infile, outfile;
+    infile = j->stdin;
+
+    sigprocmask(SIG_BLOCK, &mask_chld, &prev_chld);
+    // add job
+    j->next = first_job;
+    first_job = j;
+    
+    for(p = j->first_process; p; p = p->next)
+    {
+        if(p->next)
+        {
+            if(pipe(mypipe) < 0)
+            {
+                perror("pipe");
+                exit(1);
+            }
+
+            outfile = mypipe[1];
+        }
+        else
+            outfile = j->stdout;
+        
+        pid = fork();
+        if(pid == 0)
+            launch_process(p, j->pgid, infile, outfile, j->stderr, foreground);
+        else if(pid < 0)
+        {
+            perror("fork");
+            exit(1);
+        }
+        else
+        {
+            p->pid = pid;
+            if(shell_is_interactive)
+            {
+                if(!j->pgid)
+                    j->pgid = pid;
+                setpgid(pid, j->pgid);
+            }
+        }
+
+        if(infile != j->stdin)   close(infile);
+        if(outfile != j->stdout) close(outfile);
+        infile = mypipe[0];
+    }
+    format_job_info(j, "launched");
+
+    if(!shell_is_interactive)
+        wait_for_job(j);
+    else if(foreground)
+        put_job_in_foreground(j, 0);
+    else
+        put_job_in_background(j, 0);
+
+    sigprocmask(SIG_SETMASK, &prev_chld, NULL);
+}
+
+static int
+exec_job(char *str, int foreground)
+{
+    job *j = parse_job(str);
+
+    if(j->first_process->next == NULL) // not a pipeline
+    {
+        process *p = j->first_process;
+        char *cmd = p->argv[0];
+
+        if(strcmp(cmd, "cd") == 0)
+        {
+            int res = chdir(p->argv[1]);
+            if(res < 0)
+                perror("cd");
+            freejob(j);
+            return res;
+        }
+        else if(strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
+            exit(0);
+    }
+
+    launch_job(j, foreground);
+    int status = j->status; // need to work on job->last_status
+    do_job_notification();
+    return status;
 }
 
 /*
@@ -169,27 +308,27 @@ exec_logic(char **args, SepType sep_type)
 
 //static int exec_redirec(char **args);
 //static int exec_cmd(char **args, SepType sep_type);
-static void _exec_cmd_forked(char **args);
-static int run_builtin(char **args);
+//static void _exec_cmd_forked(char **args);
+//static int run_builtin(char **args);
 
 // volatile sig_atomic_t child_count; // used for sigchld handler
 // volatile sig_atomic_t fg_pgid;
 
+/*
 static int
-exec_pipe(char **args, SepType sep_type)
+exec_pipe(char *str, SepType sep_type)
 {
-    if(args[0] != NULL && strcmp(args[0], "!") == 0){
-        return (exec_pipe(&args[1], sep_type) == 0) ? 1 : 0;
-    }
+    // if(args[0] != NULL && strcmp(args[0], "!") == 0){
+    //     return (exec_pipe(&args[1], sep_type) == 0) ? 1 : 0;
+    // }
     
-    PipeNode *curr = parse_pipe(args);
-    PipeNode *head = curr;
+    job *j = parse_pipe(str);
 
-    if(curr->next == NULL && is_builtin(curr->args[0])){ // single (no pipe) builtin cmd -> DO NOT FORK
-        int res = run_builtin(curr->args);
-        free_pipe_list(head);
-        return res;
-    }
+    // if(curr->next == NULL && is_builtin(curr->args[0])){ // single (no pipe) builtin cmd -> DO NOT FORK
+    //     int res = run_builtin(curr->args);
+    //     free_pipe_list(head);
+    //     return res;
+    // }
 
     int pipefd[2];
     int prev_pipefd = -1;
@@ -298,11 +437,13 @@ exec_pipe(char **args, SepType sep_type)
     free_pipe_list(head);
     return last_status;
 }
+*/
 
 /*
  *  Check whether command is for subshell, builtin, or external
  */
 
+ /*
 static int run_builtin(char **args);
 static dystring *rm_parens(char **args);
 static void redirec(RedirNode* node);
@@ -395,11 +536,11 @@ static void redirec(RedirNode* node){
         curr = curr->next;
     }
 }
-
+*/
 /*
  *  execute builtin commands
  */
-
+/*
 static int
 run_builtin(char **args)
 {
@@ -422,11 +563,11 @@ run_builtin(char **args)
     }
     return 1;
 }
-
+*/
 /*
  *  remove parenthesis tokens for subshell operations
  */
-
+/*
 static dystring
 *rm_parens(char **args)
 {
@@ -453,3 +594,4 @@ static dystring
 
     return ds;
 }
+    */

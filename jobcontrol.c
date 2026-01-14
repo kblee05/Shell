@@ -7,128 +7,223 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/wait.h>
 
-static int init = 0;
-static int jid;
-job_t jobs[MAX_JOBS];
+job *first_job = NULL;
 
-static void
-initjob()
+job *
+find_job(pid_t pgid)
 {
-    for(int i=0; i<MAX_JOBS; i++){
-        jobs[i].pgid = 0;
-    }
-    jid = 0;
+    job *j;
+
+    for(j = first_job; j; j=j->next)
+        if(j->pgid == pgid)
+            return j;
+    
+    return NULL;
 }
 
-int
-addjob(pid_t pgid, int state, char *cmdline)
+static int
+job_is_stopped(job *j)
 {
-    if(init == 0){
-        initjob();
-        init = 1;
+    process *p;
+
+    for(p = j->first_process; p; p = p->next)
+        if(!p->completed && !p->stopped)
+            return 0;
+    
+    return 1;
+}
+
+static int
+job_is_completed(job *j)
+{
+    process *p;
+
+    for(p = j->first_process; p; p = p->next)
+        if(!p->completed)
+            return 0;
+    
+    return 1;
+}
+
+/* 
+ * 
+ *  SIGCHLD HAS TO BE BLOCKED BEFORE WAIT
+ * 
+ */
+
+void wait_for_job(job *j);
+
+void
+put_job_in_foreground(job *j, int cont)
+{
+    tcsetpgrp(shell_terminal, j->pgid);
+
+    if(cont)
+    {
+        tcsetattr(shell_terminal, TCSADRAIN, &j->tmodes);
+        if(kill(-j->pgid, SIGCONT) < 0)
+            perror("kill (SIGCONT)");
     }
 
-    if(pgid <= 0){
-        return -1;
-    }
+    wait_for_job(j);
 
-    for(int i=0; i < MAX_JOBS; i++){
-        if(jobs[i].pgid == 0){
-            jobs[i].pgid = pgid;
-            jobs[i].n_procs = 0;
-            jobs[i].n_finished = 0;
-            jobs[i].jid = jid++;
-            jobs[i].state = state;
-            strcpy(jobs[i].cmdline, cmdline);
-            return jid - 1;
-        }
-    }
-    // jobs is full
-    return -1;
+    tcsetpgrp(shell_terminal, shell_pgid);
+
+    tcgetattr(shell_terminal, &j->tmodes);
+    tcsetattr(shell_terminal, TCSADRAIN, &shell_tmodes);
 }
 
 void
-deletejob(job_t *job)
+put_job_in_background(job *j, int cont)
 {
-    job->pgid = 0;
-    jid--;
+    if(cont)
+        if(kill(-j->pgid, SIGCONT) < 0)
+            perror("kill (SIGCONT)");
 }
 
-int
-exec_jobctrl(char **args)
-{   
-    sigset_t mask_all, prev_all;
+static int
+mark_process_status(pid_t pid,  int status)
+{
+    job *j;
+    process *p;
 
-    sigfillset(&mask_all);
-    sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
+    if(pid > 0)
+    {
+        for(j = first_job; j; j = j->next)
+            for(p = j->first_process; p; p = p->next)
+                if(p->pid == pid)
+                {
+                    p->status = status;
+                    if(p->next == NULL)
+                        j->status = status;
+
+                    if(WIFSTOPPED(status))
+                        p->stopped = 1;
+                    else
+                    {
+                        p->completed = 1;
+                        if(WIFSIGNALED(status))
+                            fprintf(stderr, "%d: Terminated by signal %d.\n", (int) pid, WTERMSIG(p->status));
+                    }
+                    return 0;
+                }
+        fprintf(stderr, "No child process %d.\n", (int) pid);
+        return -1;
+    }
+    else if(pid == 0 || errno == ECHILD)
+        return -1;
+    else
+    {
+        perror("waitpid");
+        return -1;
+    }
+}
+
+void
+update_status()
+{
+    int status;
+    pid_t pid;
+
+    do
+    {
+        pid = waitpid(-1, &status, WUNTRACED | WNOHANG);
+    } while (!mark_process_status(pid, status));
     
-    if(strcmp(args[0], "jobs") == 0){
-        int no_jobs = 1;
+}
 
-        for(int i =0; i<MAX_JOBS; i++){
-            if(jobs[i].pgid != 0){
-                no_jobs = 0;
-                printf("jid: %d, state: %d, cmd: %s\n", jobs[i].jid, jobs[i].state, jobs[i].cmdline);
-            }
-        }
+void
+wait_for_job(job *j)
+{
+    int status;
+    pid_t pid;
 
-        if(no_jobs){
-            printf("No jobs running\n");
-        }
-        
-        sigprocmask(SIG_SETMASK, &prev_all, NULL);
-        return 0;
+    do
+    {
+        pid = waitpid(-1, &status, WUNTRACED);
+    } while (!mark_process_status(pid, status) &&
+             !job_is_stopped(j) &&
+             !job_is_completed(j));
+}
+
+void
+format_job_info(job *j, const char *status)
+{
+    fprintf(stderr, "%ld (%s): %s\n", (long)j->pgid, status, j->command);
+}
+
+void
+freejob(job *j)
+{
+    free(j->command);
+    process *p = j->first_process;
+    process *next;
+
+    while(p)
+    {
+        next = p->next;
+        free(p->argv);
+        free(p);
+        p = next;
     }
-    else if(strcmp(args[0], "fg") == 0){
-        int jid = atoi(args[1]);
-        job_t *job;
-        for(int i = 0; i<MAX_JOBS; i++){
-            if(jobs[i].jid == jid){
-                job = &jobs[i];
-                break;
-            }
-        }
-        kill(-job->pgid, SIGCONT);
-        job->state = FG;    
-        tcsetpgrp(0, job->pgid);
-        fg_child_count = job->n_procs - job->n_finished;
-        kill(-job->pgid, SIGCONT);
 
-        while(fg_child_count > 0){
-            sigsuspend(&prev_all);
-        }
+    free(j);
+}
 
-        tcsetpgrp(0, sh_pgid);
-        sigprocmask(SIG_SETMASK, &prev_all, NULL);
-        return 0;
-    }
-    else if(strcmp(args[0], "bg") == 0){
-        int jid = atoi(args[1]);
-        job_t *job;
-        for(int i = 0; i<MAX_JOBS; i++){
-            if(jobs[i].jid == jid){
-                job = &jobs[i];
-                break;
-            }
+void
+do_job_notification()
+{
+    job *j, *jlast, *jnext;
+
+    sigprocmask(SIG_BLOCK, &mask_chld, &prev_chld);
+    update_status();
+
+    jlast = NULL;
+    for(j = first_job; j; j = jnext)
+    {
+        jnext = j->next;
+
+        if(job_is_completed(j))
+        {
+            format_job_info(j, "completed");
+            if(jlast)
+                jlast->next = jnext;
+            else
+                first_job = jnext;
+            freejob(j);
         }
-        kill(-job->pgid, SIGCONT);
-        job->state = BG;
-        sigprocmask(SIG_SETMASK, &prev_all, NULL);
-        return 0;
-    }
-    else if(strcmp(args[0], "disown") == 0){
-        int jid = atoi(args[1]);
-        job_t *job;
-        for(int i = 0; i<MAX_JOBS; i++){
-            if(jobs[i].jid == jid){
-                job = &jobs[i];
-                break;
-            }
+        else if(job_is_stopped(j) && !j->notified)
+        {
+            format_job_info(j, "stopped");
+            j->notified = 1;
+            jlast = j;
         }
-        deletejob(job);
+        else
+            jlast = j;
     }
     
-    sigprocmask(SIG_SETMASK, &prev_all, NULL);
-    return 1;
+    sigprocmask(SIG_SETMASK, &prev_chld, NULL);
+}
+
+static void
+mark_job_as_running(job *j)
+{
+    process *p;
+
+    for(p = j->first_process; p; p = p->next)
+        p->stopped = 0;
+    j->notified = 0;
+}
+
+void
+continue_job(job *j, int foreground)
+{
+    mark_job_as_running(j);
+    if(foreground)
+        put_job_in_foreground(j, 1);
+    else
+        put_job_in_background(j, 1);
 }

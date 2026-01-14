@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <termios.h>
+#include <unistd.h>
+#include "jobcontrol.h"
+#include "my_shell.h"
 
 /*
  *  Helper functions
@@ -29,64 +33,61 @@ is_redir(char *arg){
 
 
 static void
-append_sepnode(SepNode **head, char **args, SepType type)
+append_sepnode(SepNode **head, char *cmd, SepType type)
 {
     SepNode *new_node = (SepNode *)malloc(sizeof(SepNode));
     if(new_node == NULL) return;
 
-    new_node->args = args;
+    new_node->cmd = cmd;
     new_node->type = type;
     new_node->next = NULL;
 
-    if(*head == NULL){
+    if(*head == NULL)
+    {
         *head = new_node;
         return;
     }
 
     SepNode *curr = *head;
-    while(curr->next != NULL){
+    while(curr->next)
         curr = curr->next;
-    }
-
     curr->next = new_node;
 }
 
-SepNode
-*parse_sep(char **args)
+SepNode *
+parse_sep(char *str)
 {
     SepNode *head = NULL;
     dystring ds;
     init_dystring(&ds);
-    char **sep_args;
     int depth = 0;
 
-    for(int i=0; args[i] != NULL; i++){
-        if(strcmp(args[i], "(") == 0) depth++;
-        else if(strcmp(args[i], ")") == 0) depth--;
+    for(int i=0; str[i]; i++)
+    {
+        if(str[i] == '(') depth++;
+        else if(str[i] == ')') depth--;
 
-        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
-            append_dystring(&ds, args[i]);
+        if(depth > 0 || (str[i] == ')' && depth == 0))
+        {
+            append_dystring(&ds, str[i]);
             continue;
         }
 
-        if(strcmp(args[i], ";") == 0 || strcmp(args[i], "&") == 0){
-            sep_args = ds.strings; // move ownership
-            ds.strings = NULL; // reset dangling pointer
+        if(str[i] == ';' || (str[i] == '&' && (str[i+1] != '&' && str[i-1] != '&')))
+        {
+            SepType type = str[i] == ';' ? SEP_SYNC : SEP_ASYNC;
+            append_sepnode(&head, ds.string, type);
             init_dystring(&ds);
-
-            SepType type = strcmp(args[i], ";") == 0 ? SEP_SYNC : SEP_ASYNC;
-            append_sepnode(&head, sep_args, type);
             continue;
         }
-        append_dystring(&ds, args[i]);
+
+        append_dystring(&ds, str[i]);
     }
-    if(ds.curr_size > 0){
-        append_sepnode(&head, ds.strings, SEP_SYNC);
-    }
-    else{
-        free(ds.strings);
-        ds.strings = NULL;
-    }
+
+    if(ds.curr_size > 0)
+        append_sepnode(&head, ds.string, SEP_SYNC);
+    else
+        free(ds.string);
 
     return head;
 }
@@ -97,14 +98,7 @@ free_sep_list(SepNode *head)
     SepNode *curr = head;
     while(curr != NULL){
         SepNode *next = curr->next;
-        
-        if(curr->args != NULL){
-            for(int i=0; curr->args[i] != NULL; i++){
-                free(curr->args[i]);
-            }
-            free(curr->args);
-        }
-
+        free(curr->cmd);
         free(curr);
         curr = next;
     }
@@ -119,81 +113,74 @@ free_sep_list(SepNode *head)
  */
 
 static void
-append_logicnode(LogicNode **head, char **args, LogicType type)
+append_logicnode(LogicNode **head, char *cmd, LogicType type)
 {
     LogicNode *new_node = (LogicNode *)malloc(sizeof(LogicNode));
     if(new_node == NULL) return;
 
-    new_node->args = args;
+    new_node->cmd = cmd;
     new_node->type = type;
     new_node->next = NULL;
 
-    if(*head == NULL){
+    if(*head == NULL)
+    {
         *head = new_node;
         return;
     }
 
     LogicNode *curr = *head;
-    while(curr->next != NULL){
+    while(curr->next)
         curr = curr->next;
-    }
 
     curr->next = new_node;
 }
 
-LogicNode
-*parse_logic(char **args)
+LogicNode *
+parse_logic(char *str)
 {
     LogicNode *head = NULL;
     dystring ds;
     init_dystring(&ds);
-    char **sep_args;
     int depth = 0;
 
-    for(int i=0; args[i] != NULL; i++){
-        if(strcmp(args[i], "(") == 0) depth++;
-        else if(strcmp(args[i], ")") == 0) depth--;
+    for(int i=0; str[i]; i++)
+    {
+        if(str[i] == '(') depth++;
+        else if(str[i] == ')') depth--;
 
-        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
-            append_dystring(&ds, args[i]);
+        if(depth > 0 || (str[i] == ')' && depth == 0)){
+            append_dystring(&ds, str[i]);
             continue;
         }
 
-        if(strcmp(args[i], "&&") == 0 || strcmp(args[i], "||") == 0){
-            sep_args = ds.strings; // move ownership
-            ds.strings = NULL; // reset dangling pointer
+        if((str[i] == '&' && str[i + 1] == '&') || 
+           (str[i] == '|' && str[i + 1] == '|'))
+        {
+            LogicType type = str[i] == '&' ? LOGIC_AND : LOGIC_OR;
+            append_logicnode(&head, ds.string, type);
             init_dystring(&ds);
-
-            LogicType type = strcmp(args[i], "&&") == 0 ? LOGIC_AND : LOGIC_OR;
-            append_logicnode(&head, sep_args, type);
+            i++;
             continue;
         }
-        append_dystring(&ds, args[i]);
+
+        append_dystring(&ds, str[i]);
     }
-    if(ds.curr_size > 0){
-        append_logicnode(&head, ds.strings, LOGIC_NONE);
-    }
-    else{
-        free(ds.strings);
-        ds.strings = NULL;
-    }
+
+    if(ds.curr_size > 0)
+        append_logicnode(&head, ds.string, LOGIC_NONE);
+    else
+        free(ds.string);
 
     return head;
 }
 
 void
-free_logic_list(LogicNode *head){
+free_logic_list(LogicNode *head)
+{
     LogicNode *curr = head;
     while(curr != NULL){
         LogicNode *next = curr->next;
-        
-        if(curr->args != NULL){
-            for(int i=0; curr->args[i] != NULL; i++){
-                free(curr->args[i]);
-            }
-            free(curr->args);
-        }
-
+        free(curr->cmd);
         free(curr);
         curr = next;
     }
@@ -207,85 +194,112 @@ free_logic_list(LogicNode *head){
  * ==============================================================
  */
 
-static void
-append_pipenode(PipeNode **head, char **args)
+#define MAX_TOKEN_COUNT 16
+
+char **
+token_process(char *cmd)
 {
-    PipeNode *new_node = (PipeNode *)malloc(sizeof(PipeNode));
-    if(new_node == NULL) return;
-
-    new_node->args = args;
-    new_node->next = NULL;
-
-    if(*head == NULL){
-        *head = new_node;
-        return;
-    }
-
-    PipeNode *curr = *head;
-    while(curr->next != NULL){
-        curr = curr->next;
-    }
-
-    curr->next = new_node;
-}
-
-PipeNode
-*parse_pipe(char **args)
-{
-    PipeNode *head = NULL;
     dystring ds;
     init_dystring(&ds);
-    char **sep_args;
+    char **argv = malloc(sizeof(char*) * 16);
+    int arg_idx = 0;
     int depth = 0;
 
-    for(int i=0; args[i] != NULL; i++){
-        if(strcmp(args[i], "(") == 0) depth++;
-        else if(strcmp(args[i], ")") == 0) depth--;
+    for(int i=0; cmd[i]; i++)
+    {
+        if(cmd[i] == '(') depth++;
+        else if(cmd[i] == ')') depth--;
 
-        if(depth > 0 || (strcmp(args[i], ")") == 0 && depth == 0)){
-            append_dystring(&ds, args[i]);
+        if(depth > 0 || (cmd[i] == ')' && depth == 0)){
+            append_dystring(&ds, cmd[i]);
             continue;
         }
-        
-        if(strcmp(args[i], "|") == 0){
-            sep_args = ds.strings; // move ownership
-            ds.strings = NULL; // reset dangling pointer
-            init_dystring(&ds);
 
-            append_pipenode(&head, sep_args);
-            continue;
-        }
-        append_dystring(&ds, args[i]);
-    }
-    if(ds.curr_size > 0){
-        append_pipenode(&head, ds.strings);
-    }
-    else{
-        free(ds.strings);
-        ds.strings = NULL;
-    }
-
-    return head;
-}
-
-void 
-free_pipe_list(PipeNode *head)
-{
-    PipeNode *curr = head;
-    while(curr != NULL){
-        PipeNode *next = curr->next;
-        
-        if(curr->args != NULL){
-            for(int i=0; curr->args[i] != NULL; i++){
-                free(curr->args[i]);
+        if(isspace(cmd[i]))
+        {
+            if(ds.curr_size > 0)
+            {
+                argv[arg_idx++] = ds.string;
+                init_dystring(&ds);
             }
-            free(curr->args);
+            continue;
         }
 
-        free(curr);
-        curr = next;
+        append_dystring(&ds, cmd[i]);
+    }
+
+    if(strlen(ds.string) > 0)
+        argv[arg_idx++] = ds.string;
+    argv[arg_idx] = NULL;
+
+    return argv;
+}
+
+void
+add_process(job *j, char *cmd)
+{
+    process *p = calloc(1, sizeof(process));
+    p->argv = token_process(cmd);
+
+    if(j->first_process == NULL)
+        j->first_process = p;
+    else
+    {
+        process *last = j->first_process;
+        for(; last->next; last = last->next){}
+        last->next = p;
     }
 }
+
+
+job *
+parse_job(char *str)
+{
+    job *j = calloc(1, sizeof(job));
+    j->first_process = NULL;
+    j->command = strdup(str);
+    j->notified = 0;
+    j->stdin = STDIN_FILENO;
+    j->stdout = STDOUT_FILENO;
+    j->stderr = STDERR_FILENO;
+    j->status = -1;
+    j->tmodes = shell_tmodes;
+
+    if(shell_is_interactive)
+        j->tmodes = shell_tmodes;
+
+    dystring ds;
+    init_dystring(&ds);
+    int depth = 0;
+
+    for(int i=0; str[i]; i++){
+        if(str[i] == '(') depth++;
+        else if(str[i] == ')') depth--;
+
+        if(depth > 0 || (str[i] == ')' && depth == 0)){
+            append_dystring(&ds, str[i]);
+            continue;
+        }
+        
+        if(str[i] == '|'){
+            add_process(j, ds.string);
+            free(ds.string);
+            init_dystring(&ds);
+            continue;
+        }
+        
+        append_dystring(&ds, str[i]);
+    }
+
+    if(ds.curr_size > 0){
+        add_process(j, ds.string);
+        free(ds.string);
+    }
+
+    return j;
+}
+
+
 
 /*
  * ==============================================================
@@ -295,6 +309,7 @@ free_pipe_list(PipeNode *head)
  * ==============================================================
  */
 
+ /*
 static void
 append_redirnode(RedirNode **head, RedirType type, int target_fd, char *filename)
 {
@@ -404,7 +419,7 @@ free_redir_list(RedirNode *head)
         curr = next;
     }
 }
-
+*/
 /*
  * ==============================================================
  *
@@ -412,7 +427,7 @@ free_redir_list(RedirNode *head)
  * 
  * ==============================================================
  */
-
+/*
 CmdNode
 *parse_cmd(char **args)
 {
@@ -464,3 +479,4 @@ free_cmd(CmdNode *node)
     free_redir_list(node->redirs);
     free(node);
 }
+    */

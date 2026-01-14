@@ -2,30 +2,40 @@
 #define JOBCONTROL_H
 
 #include <sys/types.h>
+#include <termios.h>
 
-#define MAX_JOBS 16
-#define MAXLINE 1024
-#define MAX_PROCESS 16
+typedef struct process
+{
+    struct process *next;
+    char **argv;
+    pid_t pid;
+    char completed;
+    char stopped;
+    int status;
+} process;
 
-#define UNDEF 0
-#define FG 1
-#define BG 2
-#define ST 3
-
-typedef struct job_t{
+typedef struct job
+{
+    struct job *next;
+    char *command;
+    process *first_process;
     pid_t pgid;
-    pid_t pids[MAX_PROCESS];
-    int n_procs;
-    int n_finished;
-    int jid;
-    int state;
-    char cmdline[MAXLINE];
-}job_t;
+    char notified;
+    struct termios tmodes;
+    int stdin, stdout, stderr;
+    int status;
+} job;
 
-extern job_t jobs[MAX_JOBS];
+extern job *first_job;
 
-int addjob(pid_t pid, int state, char *cmdline);
-void deletejob(job_t *job);
-int exec_jobctrl(char **args);
+job *find_job(pid_t pgid);
+void wait_for_job(job *j);
+void put_job_in_foreground(job *j, int cont);
+void put_job_in_background(job *j, int cont);
+void update_status();
+void do_job_notification();
+void format_job_info(job *j, const char *status);
+void freejob(job *j);
+void continue_job(job *j, int foreground);
 
 #endif

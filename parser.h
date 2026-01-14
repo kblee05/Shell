@@ -2,6 +2,7 @@
 #define PARSER_H
 
 #include "dynamicstring.h"
+#include "jobcontrol.h"
 
 typedef enum{
     SEP_SYNC,  // ;
@@ -9,12 +10,12 @@ typedef enum{
 } SepType;
 
 typedef struct SepNode{
-    char **args;
+    char *cmd;
     SepType type;
     struct SepNode *next;
 } SepNode;
 
-SepNode *parse_sep(char **args);
+SepNode *parse_sep(char *str);
 void free_sep_list(SepNode *head);
 
 typedef enum{
@@ -24,12 +25,12 @@ typedef enum{
 } LogicType;
 
 typedef struct LogicNode{
-    char **args;
+    char *cmd;
     LogicType type;
     struct LogicNode *next;
 } LogicNode;
 
-LogicNode *parse_logic(char **args);
+LogicNode *parse_logic(char *str);
 void free_logic_list(LogicNode *head);
 
 typedef struct PipeNode{
@@ -37,8 +38,7 @@ typedef struct PipeNode{
     struct PipeNode *next;
 } PipeNode;
 
-PipeNode *parse_pipe(char **args);
-void free_pipe_list(PipeNode *head);
+job *parse_job(char *str);
 
 typedef enum{
     REDIR_IN,     // [n] < f   (O_RDONLY)

@@ -81,7 +81,7 @@ static size_t tok_bufsize = 0;
 /*
  *  Parser
  */
-
+/*
 char **parseline(char* line){
     tok_bufsize = SHELL_TOK_BUFSIZE;
     char **tokens = malloc(tok_bufsize * sizeof(char *));
@@ -223,3 +223,4 @@ char **parseline(char* line){
     free(token);
     return tokens;
 }
+    */
