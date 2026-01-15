@@ -143,9 +143,8 @@ wait_for_job(job *j)
 
     do
     {
-        pid = waitpid(-1, &status, WUNTRACED);
-    } while (!mark_process_status(pid, status) &&
-             !job_is_stopped(j) &&
+        sigsuspend(&prev_chld);
+    } while (!job_is_stopped(j) &&
              !job_is_completed(j));
 }
 
