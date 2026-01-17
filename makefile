@@ -1,5 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g -D_POSIX_C_SOURCE=200809L
+CFLAGS = -Wall -Wextra -g -D_POSIX_C_SOURCE=200809L -fsanitize=address
+LDFLAGS = -fsanitize=address
 
 TARGET = myshell
 

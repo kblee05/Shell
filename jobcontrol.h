@@ -54,5 +54,6 @@ void do_job_notification();
 void format_job_info(job *j, const char *status);
 void freejob(job *j);
 void continue_job(job *j, int foreground);
+void cleanup_all();
 
 #endif

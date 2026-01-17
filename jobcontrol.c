@@ -164,7 +164,22 @@ freejob(job *j)
     while(p)
     {
         next = p->next;
+
+        redirection *r = p->redirs;
+        redirection *next_r;
+
+        while(r)
+        {
+            next_r = r->next;
+            free(r->filename);
+            free(r);
+            r = next_r;
+        }
+
+        for(int i=0; p->argv[i] != 0; i++)
+            free(p->argv[i]);
         free(p->argv);
+
         free(p);
         p = next;
     }
@@ -225,4 +240,18 @@ continue_job(job *j, int foreground)
         put_job_in_foreground(j, 1);
     else
         put_job_in_background(j, 1);
+}
+
+void
+cleanup_all()
+{
+    job *j;
+    job *next;
+   
+    for(j = first_job; j; j = next)
+    {
+        next = j-> next; // race condition due to sigchld handler(freejob)
+        kill(-j->pgid, SIGCONT);
+        kill(-j->pgid, SIGHUP);
+    }
 }
