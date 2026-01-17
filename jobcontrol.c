@@ -245,6 +245,11 @@ continue_job(job *j, int foreground)
 void
 cleanup_all()
 {
+    sigset_t mask_clean, prev_clean;
+    sigemptyset(&mask_clean);
+    sigaddset(&mask_clean, SIGCHLD);
+    sigprocmask(SIG_BLOCK ,&mask_clean, &prev_clean);
+    
     job *j;
     job *next;
    
@@ -254,4 +259,6 @@ cleanup_all()
         kill(-j->pgid, SIGCONT);
         kill(-j->pgid, SIGHUP);
     }
+
+    sigprocmask(SIG_SETMASK, &prev_clean, NULL);
 }
