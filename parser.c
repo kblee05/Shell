@@ -256,7 +256,7 @@ token_process(process *p, char *cmd)
     for(int i=0; argv[i] != NULL; i++)
     {
         if(is_redirec(argv[i]))
-        {   printf("\t%s : %s\n", argv[i], argv[i+1]);
+        {
             redirection *r = malloc(sizeof(redirection));
             r->fd_source = -1;
             r->next = NULL;
