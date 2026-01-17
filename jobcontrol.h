@@ -4,6 +4,21 @@
 #include <sys/types.h>
 #include <termios.h>
 
+typedef enum{
+    REDIR_FILE,
+    REDIR_DUP,
+    REDIR_CLOSE
+}redir_type;
+
+typedef struct redirection
+{
+    struct redirection *next;
+    redir_type type;
+    char *filename;
+    int fd_source;
+    int flags;
+} redirection;
+
 typedef struct process
 {
     struct process *next;
@@ -12,6 +27,7 @@ typedef struct process
     char completed;
     char stopped;
     int status;
+    redirection *redirs;
 } process;
 
 typedef struct job

@@ -8,3 +8,6 @@ MemoryAllocator.h
 main
 
 .vscode/
+
+*.txt
+*.log

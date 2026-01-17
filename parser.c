@@ -4,24 +4,12 @@
 #include <ctype.h>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include "jobcontrol.h"
 #include "my_shell.h"
-
-/*
- *  Helper functions
- */
-
-static int
-is_redir(char *arg){
-    if(isdigit(arg[0])){
-        arg = arg + 1;
-    }
-
-    if(arg[0] == '<' || arg[0] == '>' || arg[0] == '&'){
-        return 1;
-    }
-    return 0;
-}
 
 /*
  * ==============================================================
@@ -73,7 +61,7 @@ parse_sep(char *str)
             continue;
         }
 
-        if(str[i] == ';' || (str[i] == '&' && (str[i+1] != '&' && str[i-1] != '&')))
+        if(str[i] == ';' || (str[i] == '&' && (str[i+1] != '&' && str[i-1] != '&' && str[i-1] != '<' && str[i+1] != '>')))
         {
             SepType type = str[i] == ';' ? SEP_SYNC : SEP_ASYNC;
             append_sepnode(&head, ds.string, type);
@@ -194,10 +182,32 @@ free_logic_list(LogicNode *head)
  * ==============================================================
  */
 
-#define MAX_TOKEN_COUNT 16
+static int
+is_redirec(char *arg)
+{
+    if(arg == NULL || arg[0] == '\0')
+        return 0;
+    
+    int start = 0;
 
-char **
-token_process(char *cmd)
+    while(arg[start] >= '0' && arg[start] <= '9')
+        start ++;
+    
+    if(!strncmp(&arg[start], ">>", 2) ||
+       !strncmp(&arg[start], "<>", 2) ||
+       !strncmp(&arg[start], "<&", 2) ||    
+       !strncmp(&arg[start], "&>", 2) ||
+       !strncmp(&arg[start], "<&-", 3))
+        return 1;
+    
+    if(arg[start] == '<' || arg[start] == '>')
+        return 1;
+    
+    return 0;
+}
+
+static void
+token_process(process *p, char *cmd)
 {
     dystring ds;
     init_dystring(&ds);
@@ -215,6 +225,14 @@ token_process(char *cmd)
             continue;
         }
 
+        if(is_redirec(ds.string) && (cmd[i] != '>' && cmd[i] != '<' && cmd[i] != '&'))
+        {
+            argv[arg_idx++] = ds.string;
+            init_dystring(&ds);
+            i--; // filename might not be separated by whitespace
+            continue;
+        }
+
         if(isspace(cmd[i]))
         {
             if(ds.curr_size > 0)
@@ -228,18 +246,105 @@ token_process(char *cmd)
         append_dystring(&ds, cmd[i]);
     }
 
-    if(strlen(ds.string) > 0)
+    if(ds.curr_size > 0)
         argv[arg_idx++] = ds.string;
     argv[arg_idx] = NULL;
 
-    return argv;
+    int p_idx = 0;
+    redirection **last = &p->redirs;
+
+    for(int i=0; argv[i] != NULL; i++)
+    {
+        if(is_redirec(argv[i]))
+        {   printf("\t%s : %s\n", argv[i], argv[i+1]);
+            redirection *r = malloc(sizeof(redirection));
+            r->fd_source = -1;
+            r->next = NULL;
+            int j;
+            int sum = 0;
+
+            for(j = 0; argv[i][j] >= '0' && argv[i][j] <= '9'; j++)
+            {
+                sum *= 10;
+                sum += argv[i][j] - '0';
+            }
+            if(sum > 0)
+                r->fd_source = sum;
+
+            char *op = &argv[i][j];
+
+            if(strlen(op) == 1)
+            {
+                r->type = REDIR_FILE;
+                if(*op == '<')
+                {
+                    if(r->fd_source == -1)
+                        r->fd_source = 0;
+                    r->flags = O_RDONLY; 
+                }
+                else // op == '<'
+                {
+                    if(r->fd_source == -1)
+                        r->fd_source = 1;
+                    r->flags = O_CREAT | O_TRUNC | O_WRONLY;
+                }
+            }
+            else
+            {
+                if(!strncmp(op, ">>", 2))
+                {
+                    r->type = REDIR_FILE;
+                    if(r->fd_source == -1)
+                        r->fd_source = 1;
+                    r->flags = O_CREAT | O_APPEND | O_WRONLY;
+                }
+                else if(!strncmp(op, "<>", 2))
+                {
+                    r->type = REDIR_FILE;
+                    if(r->fd_source == -1)
+                        r->fd_source = 0;
+                    r->flags = O_CREAT | O_RDWR;
+                }
+                else if(!strncmp(op, "<&", 2))
+                {
+                    r->type = REDIR_DUP;
+                    if(r->fd_source == -1)
+                        r->fd_source = 0;
+                }
+                else if(!strncmp(op, "&>", 2))
+                {
+                    r->type = REDIR_DUP;
+                    if(r->fd_source == -1)
+                        r->fd_source = 1;
+                }
+            }
+
+            r->filename = argv[++i];
+            if(!strncmp(r->filename, "-", 1))
+                r->type = REDIR_CLOSE;
+            if(*last)
+                (*last)->next = r;
+            else
+                *last = r;
+            continue;
+        }
+
+        p->argv[p_idx++] = argv[i];
+    }
 }
 
 void
 add_process(job *j, char *cmd)
 {
-    process *p = calloc(1, sizeof(process));
-    p->argv = token_process(cmd);
+    process *p = malloc(sizeof(process));
+    p->argv = malloc(sizeof(char *) * 16);
+    p->next = NULL;
+    p->pid = -1;
+    p->completed = 0;
+    p->stopped = 0;
+    p->status = -1;
+    p->redirs = NULL;
+    token_process(p, cmd);
 
     if(j->first_process == NULL)
         j->first_process = p;

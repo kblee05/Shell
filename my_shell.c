@@ -20,17 +20,6 @@
 
 //  =====================Helper functions====================
 
-/*
- *  check whether cmd is builtin or not
- */
-
-static int
-is_builtin(char *arg)
-{
-    if(!strcmp(arg, "cd")) return 1;
-    if(!strcmp(arg, "quit")) return 1;
-    return 0;
-}
 
 //  ==========================================================
 
@@ -197,6 +186,32 @@ launch_process(process *p, pid_t pgid,
     {
         dup2(errfile, STDERR_FILENO);
         close(errfile);
+    }
+
+    redirection *r;
+
+    for(r = p->redirs; r; r = r->next)
+    {
+        int fd;
+
+        if(r->type == REDIR_FILE)
+        {
+            fd = open(r->filename, r->flags, 0644);
+            if(fd < 0){
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, r->fd_source);
+            close(fd);
+        }
+        else if(r->type == REDIR_DUP)
+        {
+            dup2(atoi(r->filename), r->fd_source);
+        }
+        else // r->type == REDIR_CLOSE
+        {
+            close(r->fd_source);
+        }
     }
     
     sigprocmask(SIG_SETMASK, &prev_chld, NULL);
