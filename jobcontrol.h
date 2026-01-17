@@ -4,7 +4,8 @@
 #include <sys/types.h>
 #include <termios.h>
 
-typedef enum{
+typedef enum
+{
     REDIR_FILE,
     REDIR_DUP,
     REDIR_CLOSE

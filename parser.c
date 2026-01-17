@@ -206,8 +206,8 @@ is_redirec(char *arg)
     return 0;
 }
 
-static void
-token_process(process *p, char *cmd)
+static char **
+tokenize_process(char *cmd)
 {
     dystring ds;
     init_dystring(&ds);
@@ -250,87 +250,82 @@ token_process(process *p, char *cmd)
         argv[arg_idx++] = ds.string;
     argv[arg_idx] = NULL;
 
+    return argv;
+}
+
+typedef struct RedirRule
+{
+    char *op;
+    int type;
+    int flags;
+    int default_fd;
+} RedirRule;
+
+#define NUM_OF_REDIR 6
+
+static RedirRule redir_rules[] = {
+    {">",  REDIR_FILE, O_WRONLY | O_CREAT | O_TRUNC,  1},
+    {"<",  REDIR_FILE, O_RDONLY,                      0},
+    {">>", REDIR_FILE, O_WRONLY | O_CREAT | O_APPEND, 1},
+    {"<>", REDIR_FILE, O_RDWR | O_CREAT,              0},
+    {"<&", REDIR_DUP,  0,                             0},
+    {"&>", REDIR_DUP,  0,                             0},
+    {NULL, 0, 0, 0}
+};
+
+static void
+parse_process(process *p, char *cmd)
+{
+    char **argv = tokenize_process(cmd);
+
     int p_idx = 0;
     redirection **last = &p->redirs;
 
     for(int i=0; argv[i] != NULL; i++)
     {
-        if(is_redirec(argv[i]))
+        if(!is_redirec(argv[i]))
         {
-            redirection *r = malloc(sizeof(redirection));
-            r->fd_source = -1;
-            r->next = NULL;
-            int j;
-            int sum = 0;
-
-            for(j = 0; argv[i][j] >= '0' && argv[i][j] <= '9'; j++)
-            {
-                sum *= 10;
-                sum += argv[i][j] - '0';
-            }
-            if(sum > 0)
-                r->fd_source = sum;
-
-            char *op = &argv[i][j];
-
-            if(strlen(op) == 1)
-            {
-                r->type = REDIR_FILE;
-                if(*op == '<')
-                {
-                    if(r->fd_source == -1)
-                        r->fd_source = 0;
-                    r->flags = O_RDONLY; 
-                }
-                else // op == '<'
-                {
-                    if(r->fd_source == -1)
-                        r->fd_source = 1;
-                    r->flags = O_CREAT | O_TRUNC | O_WRONLY;
-                }
-            }
-            else
-            {
-                if(!strncmp(op, ">>", 2))
-                {
-                    r->type = REDIR_FILE;
-                    if(r->fd_source == -1)
-                        r->fd_source = 1;
-                    r->flags = O_CREAT | O_APPEND | O_WRONLY;
-                }
-                else if(!strncmp(op, "<>", 2))
-                {
-                    r->type = REDIR_FILE;
-                    if(r->fd_source == -1)
-                        r->fd_source = 0;
-                    r->flags = O_CREAT | O_RDWR;
-                }
-                else if(!strncmp(op, "<&", 2))
-                {
-                    r->type = REDIR_DUP;
-                    if(r->fd_source == -1)
-                        r->fd_source = 0;
-                }
-                else if(!strncmp(op, "&>", 2))
-                {
-                    r->type = REDIR_DUP;
-                    if(r->fd_source == -1)
-                        r->fd_source = 1;
-                }
-            }
-
-            r->filename = argv[++i];
-            if(!strncmp(r->filename, "-", 1))
-                r->type = REDIR_CLOSE;
-            if(*last)
-                (*last)->next = r;
-            else
-                *last = r;
+            p->argv[p_idx++] = argv[i];
             continue;
         }
+        
+        redirection *r = malloc(sizeof(redirection));
+        r->fd_source = -1;
+        r->next = NULL;
+        int j;
+        int sum = 0;
 
-        p->argv[p_idx++] = argv[i];
+        for(j = 0; argv[i][j] >= '0' && argv[i][j] <= '9'; j++)
+        {
+            sum *= 10;
+            sum += argv[i][j] - '0';
+        }
+        if(j) // not default fd
+            r->fd_source = sum;
+
+        char *op = &argv[i][j];
+
+        for(j = 0; j < NUM_OF_REDIR; j++)
+        {
+            if(!strcmp(op, redir_rules[j].op))
+            {
+                *last = r;
+                last = &r->next;
+                r->type = redir_rules[j].type;
+                r->filename = argv[++i];
+                if(r->fd_source == -1)
+                    r->fd_source = redir_rules[j].default_fd;
+                r->flags = redir_rules[j].flags;
+
+                if(!strncmp(r->filename, "-", 1))
+                    r->type = REDIR_CLOSE;
+                
+                break;
+            }
+        }
     }
+
+    p->argv[p_idx] = NULL;
 }
 
 void
@@ -344,7 +339,7 @@ add_process(job *j, char *cmd)
     p->stopped = 0;
     p->status = -1;
     p->redirs = NULL;
-    token_process(p, cmd);
+    parse_process(p, cmd);
 
     if(j->first_process == NULL)
         j->first_process = p;
