@@ -165,6 +165,8 @@ exec_logic(char *str, int foreground)
     return last_status;
 }
 
+static void update_environ(char *envp);
+
 void
 launch_process(process *p, pid_t pgid,
                int infile, int outfile, int errfile,
@@ -225,7 +227,7 @@ launch_process(process *p, pid_t pgid,
 
     // already after fork
     for(int i = 0; p->envp[i]; i++)
-        append_dyarray(&my_environ, p->envp[i]);
+        update_environ(p->envp[i]);
     
     sigprocmask(SIG_SETMASK, &prev_chld, NULL);
     signal(SIGINT, SIG_DFL);
