@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include "jobcontrol.h"
 #include "my_shell.h"
 
@@ -276,16 +277,46 @@ static RedirRule redir_rules[] = {
     {NULL, 0, 0, 0}
 };
 
+static int
+is_env(char *arg)
+{
+    for(int i = 0; arg[i]; i++)
+        if(arg[i] == '=')
+            return 1;
+    return 0;
+}
+
+/*
+static dyarray *
+new_envp()
+{
+    dyarray *envp = new_dyarray();
+    
+    for(int i = 0; my_environ.str[i]; i++)
+        append_dyarray(envp, my_environ.str[i]);
+    
+    return envp;
+}
+*/
+
 static void
 parse_process(process *p, char *cmd)
 {
     char **argv = tokenize_process(cmd);
-
+    int e_idx;
     int p_idx = 0;
     redirection **last = &p->redirs;
+    dyarray *envp = new_dyarray();
 
     for(int i=0; argv[i] != NULL; i++)
     {
+        if(is_env(argv[i]))
+        {
+            append_dyarray(envp, argv[i]);
+            free(argv[i]);
+            continue;
+        }
+        
         if(!is_redirec(argv[i]))
         {
             p->argv[p_idx++] = argv[i]; // ownership moved
@@ -330,6 +361,8 @@ parse_process(process *p, char *cmd)
     }
 
     p->argv[p_idx] = NULL;
+    p->envp = envp->str; // envp.str ownership is moved to p->envp
+    free(envp); 
     free(argv);
 }
 

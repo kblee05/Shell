@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include "jobcontrol.h"
+#include "dynamicstring.h"
 
 extern pid_t shell_pgid;
 extern struct termios shell_tmodes;

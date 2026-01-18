@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "my_shell.h"
 #include "parser.h"
@@ -29,11 +30,19 @@ int shell_terminal;
 int shell_is_interactive;
 sigset_t mask_chld, prev_chld;
 
+static dyarray my_environ;
+
+extern char **environ;
+
 void
 init_shell()
 {
     shell_terminal = STDERR_FILENO;
     shell_is_interactive = isatty(shell_terminal);
+    init_dyarray(&my_environ);
+    
+    for(int i = 0; environ[i]; i++)
+        append_dyarray(&my_environ, environ[i]);
 
     if(shell_is_interactive)
     {
@@ -213,6 +222,10 @@ launch_process(process *p, pid_t pgid,
             close(r->fd_source);
         }
     }
+
+    // already after fork
+    for(int i = 0; p->envp[i]; i++)
+        append_dyarray(&my_environ, p->envp[i]);
     
     sigprocmask(SIG_SETMASK, &prev_chld, NULL);
     signal(SIGINT, SIG_DFL);
@@ -221,7 +234,7 @@ launch_process(process *p, pid_t pgid,
     signal(SIGTTIN, SIG_DFL);
     signal(SIGTTOU, SIG_DFL);
 
-    execvp(p->argv[0], p->argv);
+    execvpe(p->argv[0], p->argv, my_environ.str);
     perror("execvp"); // should not reach here
     exit(1);
 }
@@ -289,6 +302,56 @@ launch_job(job *j, int foreground)
     sigprocmask(SIG_SETMASK, &prev_chld, NULL);
 }
 
+static void
+update_environ(char *envp)
+{
+    char *var = malloc(sizeof(char) * 64);
+    int i;
+
+    for(i = 0; envp[i] != '='; i++)
+        var[i] = envp[i];
+    var[i] = '=';
+    var[i + 1] = '\0';
+    
+    for(int i = 0; my_environ.str[i]; i++)
+        if(!strncmp(my_environ.str[i], var, strlen(var)))
+        {
+            free(my_environ.str[i]);
+            my_environ.str[i] = strdup(envp);
+            free(var);
+            return;
+        }
+    
+    // new var
+    append_dyarray(&my_environ, envp);
+    free(var);
+}
+
+static int
+do_cd(char *target)
+{
+    if(!target)
+        for(int i = 0; my_environ.str[i]; i++)
+            if(!strncmp(my_environ.str[i], "HOME=", 5))
+            {
+                target = my_environ.str[i] + 5; // borrow FOO from HOME=FOO
+                break;
+            }
+
+    int res = chdir(target);
+    
+    if(res < 0)
+        perror("cd");
+
+    char cwd[128];
+    getcwd(cwd, sizeof(cwd));
+    char new_pwd[128 + 5];
+    snprintf(new_pwd, sizeof(new_pwd), "PWD=%s", cwd);
+    update_environ(new_pwd);
+    
+    return res;
+}
+
 static int
 exec_job(char *str, int foreground)
 {
@@ -299,13 +362,18 @@ exec_job(char *str, int foreground)
         process *p = j->first_process;
         char *cmd = p->argv[0];
 
+        if(cmd == NULL) // new env var
+        {
+            update_environ(j->first_process->envp[0]); // borrowing
+            freejob(j);
+            return 0;
+        }
+
         if(strcmp(cmd, "cd") == 0)
         {
-            int res = chdir(p->argv[1]);
-            if(res < 0)
-                perror("cd");
+            do_cd(p->argv[1]);
             freejob(j);
-            return res;
+            return 0;
         }
         else if(strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
         {

@@ -26,3 +26,41 @@ void free_dystring(dystring *ds){
     ds->curr_size = 0;
     ds->max_size = 0;
 }
+
+dyarray *
+new_dyarray()
+{
+    dyarray *da = malloc(sizeof(dyarray));
+    init_dyarray(da);
+    return da;
+}
+
+void
+init_dyarray(dyarray *da)
+{
+    da->curr_size = 0;
+    da->max_size = 128;
+    da->str = malloc(sizeof(char *) * da->max_size);
+    da->str[0] = NULL;
+}
+
+void
+append_dyarray(dyarray *da, char *s)
+{
+    if(da->curr_size + 1 >= da->max_size)
+    {
+        da->max_size *= 2;
+        da->str = realloc(da->str, sizeof(char *) * da->max_size);
+    }
+
+    da->str[da->curr_size++] = strdup(s);
+    da->str[da->curr_size] = NULL;
+}
+
+void
+free_dyarray(dyarray *da)
+{
+    for(int i = 0; da->str[i]; i++)
+        free(da->str[i]);
+    free(da->str);
+}

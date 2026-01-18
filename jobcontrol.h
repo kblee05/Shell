@@ -24,6 +24,7 @@ typedef struct process
 {
     struct process *next;
     char **argv;
+    char **envp;
     pid_t pid;
     char completed;
     char stopped;

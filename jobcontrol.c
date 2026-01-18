@@ -180,6 +180,10 @@ freejob(job *j)
             free(p->argv[i]);
         free(p->argv);
 
+        for(int i=0; p->envp[i]; i++)
+            free(p->envp[i]);
+        free(p->envp);
+
         free(p);
         p = next;
     }
