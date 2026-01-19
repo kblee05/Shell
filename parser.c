@@ -299,6 +299,81 @@ new_envp()
 }
 */
 
+static redirection *
+parse_redirec(char *redir, char *filename)
+{
+    redirection *r = new_redirection();
+    int i;
+    int sum = 0;
+
+    for(i = 0; redir[i] >= '0' && redir[i] <= '9'; i++)
+    {
+        sum *= 10;
+        sum += redir[i] - '0';
+    }
+    if(i) // not default fd
+        r->fd_source = sum;
+
+    char *op = &redir[i]; // borrow
+
+    for(i = 0; i < NUM_OF_REDIR; i++)
+        if(!strcmp(op, redir_rules[i].op))
+        {
+            r->type = redir_rules[i].type;
+            r->filename = filename; // ownership moved
+            if(r->fd_source == -1)
+                r->fd_source = redir_rules[i].default_fd;
+            r->flags = redir_rules[i].flags;
+
+            if(!strncmp(r->filename, "-", 1))
+                r->type = REDIR_CLOSE;
+            
+            free(redir); // free operator
+            break;
+        }
+    
+    return r;
+}
+
+static char *
+parse_env(char *env_var, char *arg)
+{
+    // prefix
+    int pre_len = env_var - arg;
+    char *prefix = strdup(arg);
+    prefix[pre_len] = '\0';
+    
+    // value
+    env_var = &env_var[1]; // skip $
+    int var_len = 0;
+
+    while(env_var[var_len] && (isalnum(env_var[var_len]) || env_var[var_len] == '_'))
+        var_len++;
+    
+    char *key = strdup(env_var); // dup FOO from ABC$FOO/DEF
+    key[var_len] = '\0'; // only FOO\0 left
+    char *value = get_environ(key); // malloc value
+    free(key);
+    
+    // suffix
+    char *suffix = strdup(&arg[pre_len + var_len + 1]);
+
+    // new string with replaced env
+
+    dystring *ds = new_dystring(); // malloc ds
+    
+    merge_dystring(ds, prefix);
+    merge_dystring(ds, value ? value : "");
+    merge_dystring(ds, suffix);
+    free(prefix);
+    free(value);
+    free(suffix);
+
+    char* res = ds->string; // move ownership of ds.string
+    free(ds);
+    return res;
+}
+
 static void
 parse_process(process *p, char *cmd)
 {
@@ -306,79 +381,46 @@ parse_process(process *p, char *cmd)
     int p_idx = 0;
     redirection **last = &p->redirs;
     dyarray *envp = new_dyarray();
+    char *env_var;
 
     for(int i=0; argv[i] != NULL; i++)
     {
+        if(!strncmp(argv[i], "$?", 2) && argv[i][2] == '\0')
+        {
+            free(argv[i]);
+            argv[i] = malloc(12);
+            snprintf(argv[i], 12, "%d", last_exit_status);
+        }
+        else if(!strncmp(argv[i], "$$", 2) && argv[i][2] == '\0')
+        {
+            free(argv[i]);
+            argv[i] = malloc(12);
+            snprintf(argv[i], 12, "%d", (int)getpid());
+        }
+        
         if(is_env(argv[i]))
         {
             append_dyarray(envp, argv[i]);
             free(argv[i]);
             continue;
         }
-        
-        if(!is_redirec(argv[i]))
+
+        if(is_redirec(argv[i]))
         {
-            if(!strncmp(argv[i], "$?", 2) && argv[i][2] == '\0')
-            {
-                free(argv[i]);
-                argv[i] = malloc(12);
-                snprintf(argv[i], 12, "%d", last_exit_status);
-            }
-            else if(!strncmp(argv[i], "$$", 2) && argv[i][2] == '\0')
-            {
-                free(argv[i]);
-                argv[i] = malloc(12);
-                snprintf(argv[i], 12, "%d", (int)getpid());
-            }
-            else if(argv[i][0] == '$')
-            {
-                char *key = &argv[i][1]; // borrowing
-                char *value;
-
-                value = get_environ(key);
-                free(argv[i]); // free previous $FOO
-                argv[i] = value; // move ownership to argv[i]
-            }
-
-            p->argv[p_idx++] = argv[i]; // ownership moved
+            *last = parse_redirec(argv[i], argv[i + 1]); // move ownership of r
+            last = &(*last)->next;
+            i++; // skip filename 
             continue;
         }
         
-        redirection *r = malloc(sizeof(redirection));
-        r->fd_source = -1;
-        r->next = NULL;
-        int j;
-        int sum = 0;
-
-        for(j = 0; argv[i][j] >= '0' && argv[i][j] <= '9'; j++)
+        while((env_var = strchr(argv[i], '$'))) // borrow $FOO from ABC$FOO/DEF
         {
-            sum *= 10;
-            sum += argv[i][j] - '0';
+            char *res = parse_env(env_var, argv[i]); // move ownership of ds.string
+            free(argv[i]);
+            argv[i] = res;
         }
-        if(j) // not default fd
-            r->fd_source = sum;
 
-        char *op = &argv[i][j];
-
-        for(j = 0; j < NUM_OF_REDIR; j++)
-        {
-            if(!strcmp(op, redir_rules[j].op))
-            {
-                *last = r;
-                last = &r->next;
-                r->type = redir_rules[j].type;
-                r->filename = argv[++i]; // ownership moved
-                if(r->fd_source == -1)
-                    r->fd_source = redir_rules[j].default_fd;
-                r->flags = redir_rules[j].flags;
-
-                if(!strncmp(r->filename, "-", 1))
-                    r->type = REDIR_CLOSE;
-                
-                free(argv[i-1]); // free operator
-                break;
-            }
-        }
+        p->argv[p_idx++] = argv[i]; // ownership moved
     }
 
     p->argv[p_idx] = NULL;

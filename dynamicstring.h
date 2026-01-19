@@ -9,9 +9,11 @@ typedef struct dystring{
     size_t curr_size;
 }dystring;
 
+dystring *new_dystring();
 void init_dystring(dystring* ds);
 void append_dystring(dystring* ds, char c);
 void free_dystring(dystring *ds);
+void merge_dystring(dystring *ds, char *target);
 
 typedef struct dyarray
 {

@@ -2,6 +2,14 @@
 #include <string.h>
 #include <stdlib.h>
 
+dystring *
+new_dystring()
+{
+    dystring *ds = malloc(sizeof(dystring));
+    init_dystring(ds);
+    return ds;
+}
+
 void init_dystring(dystring* ds){
     ds->curr_size = 0;
     ds->max_size = 64;
@@ -25,6 +33,15 @@ void free_dystring(dystring *ds){
     ds->string = NULL;
     ds->curr_size = 0;
     ds->max_size = 0;
+}
+
+void
+merge_dystring(dystring *ds, char *target)
+{
+    size_t i;
+
+    for(i = 0; i < strlen(target); i++)
+        append_dystring(ds, target[i]);
 }
 
 dyarray *

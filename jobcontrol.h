@@ -8,7 +8,8 @@ typedef enum
 {
     REDIR_FILE,
     REDIR_DUP,
-    REDIR_CLOSE
+    REDIR_CLOSE,
+    REDIR_NONE
 }redir_type;
 
 typedef struct redirection
@@ -59,5 +60,6 @@ void cleanup_all();
 
 job *new_job();
 process *new_process();
+redirection *new_redirection();
 
 #endif

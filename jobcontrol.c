@@ -295,3 +295,15 @@ new_process()
     p->envp = NULL;
     return p;
 }
+
+redirection *
+new_redirection()
+{
+    redirection *r = malloc(sizeof(redirection));
+    r->fd_source = -1;
+    r->next = NULL;
+    r->type = REDIR_NONE;
+    r->filename = NULL;
+    r->flags = 0; // no flags
+    return r;
+}
