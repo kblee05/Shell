@@ -29,10 +29,23 @@ struct termios shell_tmodes;
 int shell_terminal;
 int shell_is_interactive;
 sigset_t mask_chld, prev_chld;
+int last_exit_status = -1;
 
 static dyarray my_environ;
 
 extern char **environ;
+
+char *
+get_environ(char* key)
+{
+    size_t len = strlen(key);
+
+    for(int i = 0; my_environ.str[i]; i++)
+        if(!strncmp(my_environ.str[i], key, len) && my_environ.str[i][len] == '=')
+            return strdup(&my_environ.str[i][len + 1]);
+
+    return NULL;
+}
 
 void
 init_shell()
@@ -236,6 +249,19 @@ launch_process(process *p, pid_t pgid,
     signal(SIGTTIN, SIG_DFL);
     signal(SIGTTOU, SIG_DFL);
 
+    if(!p->argv[1] && p->argv[0][0] == '(') // subshell  .. | ( foo ...) | ..
+    {
+        shell_is_interactive = 0;
+        char *sub_cmd = p->argv[0];
+        int len = strlen(sub_cmd);
+
+        if(sub_cmd[len - 1] == ')')
+            sub_cmd[len - 1] = '\0';
+        
+        int res = exec_sep(&sub_cmd[1]); // skip opening parenthesis
+        exit(res);
+    }
+
     execvpe(p->argv[0], p->argv, my_environ.str);
     perror("execvp"); // should not reach here
     exit(1);
@@ -386,6 +412,7 @@ exec_job(char *str, int foreground)
 
     launch_job(j, foreground);
     int status = j->status;
+    last_exit_status = status;
     do_job_notification();
     return status;
 }

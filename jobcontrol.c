@@ -138,9 +138,6 @@ update_status()
 void
 wait_for_job(job *j)
 {
-    int status;
-    pid_t pid;
-
     do
     {
         sigsuspend(&prev_chld);
@@ -265,4 +262,36 @@ cleanup_all()
     }
 
     sigprocmask(SIG_SETMASK, &prev_clean, NULL);
+}
+
+job *
+new_job()
+{
+    job *j = malloc(sizeof(job));
+    j->next = NULL;
+    j->command = NULL;
+    j->first_process = NULL;
+    j->pgid = 0; // default for non interactive shell
+    j->notified = 0;
+    j->tmodes = shell_tmodes;
+    j->stdin = STDIN_FILENO;
+    j->stdout = STDOUT_FILENO;
+    j->stderr = STDERR_FILENO;
+    j->status = -1;
+    return j;
+}
+
+process *
+new_process()
+{
+    process *p = malloc(sizeof(process));
+    p->argv = malloc(sizeof(char *) * 32);
+    p->next = NULL;
+    p->pid = -1;
+    p->completed = 0;
+    p->stopped = 0;
+    p->status = -1;
+    p->redirs = NULL;
+    p->envp = NULL;
+    return p;
 }

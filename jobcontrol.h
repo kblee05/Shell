@@ -57,4 +57,7 @@ void freejob(job *j);
 void continue_job(job *j, int foreground);
 void cleanup_all();
 
+job *new_job();
+process *new_process();
+
 #endif

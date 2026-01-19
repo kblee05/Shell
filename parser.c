@@ -303,7 +303,6 @@ static void
 parse_process(process *p, char *cmd)
 {
     char **argv = tokenize_process(cmd);
-    int e_idx;
     int p_idx = 0;
     redirection **last = &p->redirs;
     dyarray *envp = new_dyarray();
@@ -319,6 +318,28 @@ parse_process(process *p, char *cmd)
         
         if(!is_redirec(argv[i]))
         {
+            if(!strncmp(argv[i], "$?", 2) && argv[i][2] == '\0')
+            {
+                free(argv[i]);
+                argv[i] = malloc(12);
+                snprintf(argv[i], 12, "%d", last_exit_status);
+            }
+            else if(!strncmp(argv[i], "$$", 2) && argv[i][2] == '\0')
+            {
+                free(argv[i]);
+                argv[i] = malloc(12);
+                snprintf(argv[i], 12, "%d", (int)getpid());
+            }
+            else if(argv[i][0] == '$')
+            {
+                char *key = &argv[i][1]; // borrowing
+                char *value;
+
+                value = get_environ(key);
+                free(argv[i]); // free previous $FOO
+                argv[i] = value; // move ownership to argv[i]
+            }
+
             p->argv[p_idx++] = argv[i]; // ownership moved
             continue;
         }
@@ -369,14 +390,7 @@ parse_process(process *p, char *cmd)
 void
 add_process(job *j, char *cmd)
 {
-    process *p = malloc(sizeof(process));
-    p->argv = malloc(sizeof(char *) * 16);
-    p->next = NULL;
-    p->pid = -1;
-    p->completed = 0;
-    p->stopped = 0;
-    p->status = -1;
-    p->redirs = NULL;
+    process *p = new_process();
     parse_process(p, cmd);
 
     if(j->first_process == NULL)
@@ -393,19 +407,8 @@ add_process(job *j, char *cmd)
 job *
 parse_job(char *str)
 {
-    job *j = calloc(1, sizeof(job));
-    j->first_process = NULL;
+    job *j = new_job();
     j->command = strdup(str);
-    j->notified = 0;
-    j->stdin = STDIN_FILENO;
-    j->stdout = STDOUT_FILENO;
-    j->stderr = STDERR_FILENO;
-    j->status = -1;
-    j->tmodes = shell_tmodes;
-
-    if(shell_is_interactive)
-        j->tmodes = shell_tmodes;
-
     dystring ds;
     init_dystring(&ds);
     int depth = 0;

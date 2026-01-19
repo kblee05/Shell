@@ -11,7 +11,9 @@ extern struct termios shell_tmodes;
 extern int shell_terminal;
 extern int shell_is_interactive;
 extern sigset_t mask_chld, prev_chld;
+extern int last_exit_status;
 
 void myshell_loop();
+char *get_environ(char* key);
 
 #endif
