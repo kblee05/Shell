@@ -144,7 +144,7 @@ exec_sep(char *str)
     int res = 0;
 
     for(; curr; curr = curr->next)
-        res = exec_logic(curr->cmd, (curr->type == SEP_SYNC) ? 1 : 0);
+        res = exec_logic(curr->cmd, (curr->sync) ? 1 : 0);
 
     free_sep_list(head);
     return res;
@@ -257,6 +257,8 @@ launch_process(process *p, pid_t pgid,
 
         if(sub_cmd[len - 1] == ')')
             sub_cmd[len - 1] = '\0';
+
+        printf("subshell cmd: %s\n", &sub_cmd[1]);
         
         int res = exec_sep(&sub_cmd[1]); // skip opening parenthesis
         exit(res);
@@ -333,7 +335,7 @@ launch_job(job *j, int foreground)
 static void
 update_environ(char *envp)
 {
-    char *var = malloc(sizeof(char) * 64);
+    char *var = malloc(sizeof(char) * 4096);
     int i;
 
     for(i = 0; envp[i] != '='; i++)

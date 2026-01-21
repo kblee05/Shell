@@ -4,14 +4,9 @@
 #include "dynamicstring.h"
 #include "jobcontrol.h"
 
-typedef enum{
-    SEP_SYNC,  // ;
-    SEP_ASYNC, // &
-} SepType;
-
 typedef struct SepNode{
     char *cmd;
-    SepType type;
+    char sync;
     struct SepNode *next;
 } SepNode;
 

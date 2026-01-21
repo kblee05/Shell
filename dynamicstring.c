@@ -14,6 +14,7 @@ void init_dystring(dystring* ds){
     ds->curr_size = 0;
     ds->max_size = 64;
     ds->string = (char *) malloc(sizeof(char) * ds->max_size);
+    ds->string[0] = '\0';
 }
 
 void append_dystring(dystring* ds, char c){
