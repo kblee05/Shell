@@ -3,28 +3,27 @@
 
 #include <stddef.h>
 
-typedef struct dystring{
+struct dystring {
     char *string;
     size_t max_size;
     size_t curr_size;
-}dystring;
+};
 
-dystring *new_dystring();
-void init_dystring(dystring* ds);
-void append_dystring(dystring* ds, char c);
-void free_dystring(dystring *ds);
-void merge_dystring(dystring *ds, char *target);
+struct dystring *new_dystring();
+struct dystring init_dystring();
+void append_dystring(struct dystring* ds, char c);
+void free_dystring(struct dystring *ds);
+void merge_dystring(struct dystring *ds, const char *target);
 
-typedef struct dyarray
-{
+struct dyarray {
     char **str;
     int curr_size;
     int max_size;
-} dyarray;
+};
 
-dyarray *new_dyarray();
-void init_dyarray(dyarray *da);
-void append_dyarray(dyarray *da, char *s);
-void free_dyarray(dyarray *da);
+struct dyarray *new_dyarray();
+struct dyarray init_dyarray();
+void append_dyarray(struct dyarray *da, const char *s);
+void free_dyarray(struct dyarray *da);
 
 #endif

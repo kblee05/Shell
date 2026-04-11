@@ -4,30 +4,30 @@
 #include "dynamicstring.h"
 #include "jobcontrol.h"
 
-typedef struct SepNode{
-    char *cmd;
-    char sync;
-    struct SepNode *next;
-} SepNode;
+struct SepNode{
+	char *cmd;
+	char sync;
+	struct SepNode *next;
+};
 
-SepNode *parse_sep(char *str);
-void free_sep_list(SepNode *head);
+struct SepNode *parse_sep(const char *str);
+void free_sep_list(struct SepNode *head);
 
-typedef enum{
-    LOGIC_AND,
-    LOGIC_OR,
-    LOGIC_NONE
-} LogicType;
+enum LogicType {
+	LOGIC_AND,
+	LOGIC_OR,
+	LOGIC_NONE
+};
 
-typedef struct LogicNode{
-    char *cmd;
-    LogicType type;
-    struct LogicNode *next;
-} LogicNode;
+struct LogicNode{
+	char *cmd;
+	enum LogicType type;
+	struct LogicNode *next;
+};
 
-LogicNode *parse_logic(char *str);
-void free_logic_list(LogicNode *head);
+struct LogicNode *parse_logic(const char *str);
+void free_logic_list(struct LogicNode *head);
 
-job *parse_job(char *str);
+struct job *parse_job(char *str);
 
 #endif

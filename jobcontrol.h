@@ -4,62 +4,58 @@
 #include <sys/types.h>
 #include <termios.h>
 
-typedef enum
-{
-    REDIR_FILE,
-    REDIR_DUP,
-    REDIR_CLOSE,
-    REDIR_NONE
-}redir_type;
+enum RedirType {
+	REDIR_FILE,
+	REDIR_DUP,
+	REDIR_CLOSE,
+	REDIR_NONE
+};
 
-typedef struct redirection
-{
-    struct redirection *next;
-    redir_type type;
-    char *filename;
-    int fd_source;
-    int flags;
-} redirection;
+struct redirection {
+	struct redirection *next;
+	enum RedirType type;
+	char *filename;
+	int fd_source;
+	int flags;
+};
 
-typedef struct process
-{
-    struct process *next;
-    char **argv;
-    char **envp;
-    pid_t pid;
-    char completed;
-    char stopped;
-    int status;
-    redirection *redirs;
-} process;
+struct process {
+	struct process *next;
+	char **argv;
+	char **envp;
+	pid_t pid;
+	char completed;
+	char stopped;
+	int status;
+	struct redirection *redirs;
+};
 
-typedef struct job
-{
-    struct job *next;
-    char *command;
-    process *first_process;
-    pid_t pgid;
-    char notified;
-    struct termios tmodes;
-    int stdin, stdout, stderr;
-    int status;
-} job;
+struct job {
+	struct job *next;
+	char *command;
+	struct process *first_process;
+	pid_t pgid;
+	char notified;
+	struct termios tmodes;
+	int stdin, stdout, stderr;
+	int status;
+};
 
-extern job *first_job;
+extern struct job *first_job;
 
-job *find_job(pid_t pgid);
-void wait_for_job(job *j);
-void put_job_in_foreground(job *j, int cont);
-void put_job_in_background(job *j, int cont);
+struct job *find_job(pid_t pgid);
+void wait_for_job(struct job *j);
+void put_job_in_foreground(struct job *j, int cont);
+void put_job_in_background(struct job *j, int cont);
 void update_status();
 void do_job_notification();
-void format_job_info(job *j, const char *status);
-void freejob(job *j);
-void continue_job(job *j, int foreground);
+void format_job_info(struct job *j, const char *status);
+void freejob(struct job *j);
+void continue_job(struct job *j, int foreground);
 void cleanup_all();
 
-job *new_job();
-process *new_process();
-redirection *new_redirection();
+struct job *new_job();
+struct process *new_process();
+struct redirection *new_redirection();
 
 #endif
